@@ -79,6 +79,8 @@
       "summary": { "en": "A page in magpie's window with calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them. Reads only your usage summary.", "zh": "在 magpie 窗口里一眼看到今天、7 天或 30 天的调用、错误、token、费用和对应模型。只读取用量汇总。" } },
     {"package": "@magpie-community/agent-kimi-desktop", "name": "Kimi", "kind": "agent", "community": true, "summary": {"en": "Kimi desktop Work on Magpie's Agents page: select a model from Magpie, then disconnect to restore the original service. Not Kimi Code CLI.", "zh": "把普通 Kimi 桌面版 Work 接入 Magpie Agent 页，使用已配置的模型；断开恢复原连接。不是 Kimi Code CLI。"}},
     { "package": "@magpie-community/opencode-cloudflare-workers-ai-auth", "name": "Cloudflare Workers AI", "providers": ["cloudflare-workers-ai"], "community": true,
-      "summary": { "en": "Cloudflare Workers AI with your API token (Workers AI:Edit): 28+ models discovered live from models.dev, the 8 paid-only models flagged, and a Neurons/day allowance row in magpie quota.", "zh": "用你的 Cloudflare API Token（Workers AI:Edit 权限）登录 Workers AI：28+ 模型经 models.dev 实时发现，付费专属模型自动标注，magpie quota 显示每日 Neurons 免费额度。" } }
+      "summary": { "en": "Cloudflare Workers AI with your API token (Workers AI:Edit): 28+ models discovered live from models.dev, the 8 paid-only models flagged, and a Neurons/day allowance row in magpie quota.", "zh": "用你的 Cloudflare API Token（Workers AI:Edit 权限）登录 Workers AI：28+ 模型经 models.dev 实时发现，付费专属模型自动标注，magpie quota 显示每日 Neurons 免费额度。" } },
+    { "package": "opencode-orcaterm-auth", "name": "OrcaTerm", "icon": "https://raw.githubusercontent.com/hg1048596-pixel/opencode-orcaterm-auth/main/icon.png", "providers": ["orcaterm"],
+      "summary": { "en": "Tencent Cloud OrcaTerm (遨驰终端) AI quota — 1000 questions a month across DeepSeek, Hunyuan, GLM and Kimi — as an OpenAI-compatible provider. Unofficial.", "zh": "把腾讯云 OrcaTerm（遨驰终端）的 AI 问答额度——每月 1000 次，覆盖 DeepSeek、混元、GLM、Kimi——反代成 OpenAI 兼容供应商。非官方。" } }
   ]
 }
