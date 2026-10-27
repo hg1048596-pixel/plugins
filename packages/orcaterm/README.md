@@ -80,40 +80,86 @@ reply where you can see it.
 
 ## Sign-in
 
-There is one method: paste the cookie pair.
+Two credentials can drive the assistant, and they are **not** equal in scope:
+
+| Credential | Comes from | Lifetime | Authority |
+| --- | --- | --- | --- |
+| **WeChat OAuth access token** (recommended) | scanning a QR code | 2 hours, renewed automatically | OrcaTerm only |
+| `uin` + `skey` | your Tencent Cloud **console session** | until you sign out of the console | your whole Tencent Cloud account |
+
+The QR route is preferred: it is the same sign-in the OrcaTerm clients use, and the token it yields
+cannot touch anything outside OrcaTerm. Either kind is accepted — the plugin tells them apart by the
+key's shape.
+
+### Scan a QR code (recommended)
+
+```sh
+magpie plugin login orcaterm     # choose the first entry
+```
+
+A page opens at <http://127.0.0.1:4080/login> with a WeChat QR code. Scan it and the plugin carries
+on by itself — there is no URL to copy.
+
+How the callback is captured: the page embeds WeChat's `qrconnect` widget through the official
+`wxLogin.js` with `self_redirect: true`. After a scan, the return to
+`orcaterm.com/oauth/wechat/bridge?code=…&state=…` happens inside the widget's **own inner iframe**,
+so that page's `window.parent` is still our page and its `postMessage` arrives. Without
+`self_redirect`, WeChat navigates the top window instead, which replaces the page and loses the
+message — that is the one detail the whole flow hangs on.
+
+Behind a remote deploy the page listens on the server's loopback and your browser cannot reach it:
+
+```sh
+ssh -L 4080:127.0.0.1:4080 <server>
+```
+
+`ORCATERM_CAPTURE_PORT`, `ORCATERM_CAPTURE_HOST` and `ORCATERM_CAPTURE_BASE` override the address.
+
+The token is renewed before it expires through `OAuthRefreshToken`, so a normal session never asks
+you to scan again.
+
+### Paste the cookie pair (fallback)
 
 1. Sign in at <https://cloud.tencent.com> in a browser (the AI allowance follows the Tencent Cloud
    sign-in, not a separate OrcaTerm one).
 2. Open DevTools → **Application** → **Cookies** → `https://cloud.tencent.com`.
 3. Copy the values of **`uin`** and **`skey`**.
-4. In magpie, run `magpie plugin login orcaterm` and paste them as `uin=o1234567890; skey=AbCdEf…`.
+4. In magpie, run `magpie plugin login orcaterm` and pick the paste entry, as
+   `uin=o1234567890; skey=AbCdEf…`.
 
 Both halves are required. The AI endpoint reads the pair as one credential: with only `skey`, or
 with `p_uin`/`p_skey` under those names, it answers `NEED_UIN_AND_SKEY` and never looks further.
 
-An automatic browser sign-in was tried and dropped: the pair is an HttpOnly cookie, the browser
-never hands it to another program, and the WeChat callback address is fixed server-side, so nothing
-can be redirected to a local listener. Pasting once is the whole of it — magpie keeps the pair in
-`plugin-auth.json` (mode 600) and asks for nothing again until `skey` expires.
-
 ## Models
 
-The name shown is the id sent upstream — no marketing names, since those are not what the service
-serves. Context and output limits are estimates: the upstream publishes no window size per model.
+Use only what OrcaTerm's own model picker offers. The ids are **namespaced** — `TokenHub/<model>`
+and `Hunyuan3/<model>` — and that prefix is the whole difference: sent bare, `glm-5.3` answers
+`LLM(glm-5.3) is not loaded`, while `TokenHub/glm-5.3` answers.
 
-| id | reasoning |
-| --- | --- |
-| `deepseek-chat-latest` | ✓ |
-| `hy3-preview` | ✓ |
-| `glm-4.7` | |
-| `glm-4.7-thinking` | ✓ |
-| `kimi-k2` | |
-| `kimi-k2-thinking` | ✓ |
-| `hunyuan-turbos` | |
-| `hunyuan-t1` | ✓ |
+| id | label in the picker | reasoning |
+| --- | --- | --- |
+| `TokenHub/deepseek-v4-pro` | Deepseek-V4-Pro | ✓ |
+| `TokenHub/deepseek-v4-flash` | DeepSeek-V4-Flash | |
+| `TokenHub/deepseek-v4.1-flash` | DeepSeek-V4.1-Flash | |
+| `TokenHub/glm-5.3` | GLM-5.3 | ✓ |
+| `TokenHub/glm-5.3-flash` | GLM-5.3-Flash | |
+| `TokenHub/glm-5.2` | GLM-5.2 | |
+| `TokenHub/kimi-k3` | Kimi-K3 | |
+| `Hunyuan3/hy3` | Hy3 | ✓ |
+| `Hunyuan3/hy4-preview` | Hy4-preview | ✓ |
 
-Short aliases work too (`deepseek`, `kimi`, `glm`, `hunyuan`). A model id the plugin doesn't know is
-passed through, so a model Tencent adds later can be used before this package learns about it.
+**Do not use the others.** A few more ids answer on the endpoint but **cannot be selected in
+OrcaTerm's own model picker** — `glm-4.7-thinking`, `kimi-k2-thinking`, `kimi-k2.5`,
+`kimi-k2.5-thinking`, `kimi-latest`, `hunyuan-turbos`, `qwen3`, `deepseek-reasoner`. Calling them
+means going around the product's own interface, which the service may treat as abnormal use, and
+**your account may be restricted for it**. They remain resolvable only so that existing configs
+keep working; a new config should use the nine above.
+
+Aliases work too (`deepseek`, `kimi`, `glm`, `hunyuan`), as do the picker labels themselves
+(`Deepseek-V4-Pro`, `GLM-5.3`, `Hy3-preview`…), and the older ids (`deepseek-chat-latest`,
+`glm-4.7`, `kimi-k2`, `hunyuan-t1`) resolve to their current equivalents.
+
+Context and output limits are estimates: the upstream publishes no window size per model.
 
 ## When the upstream refuses
 
@@ -167,7 +213,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-38 tests over six files. No test signs in or reaches the network — `fetch` is replaced in each.
+42 tests over six files. No test signs in or reaches the network — `fetch` is replaced in each.
 
 | file | what it holds |
 | --- | --- |
@@ -189,16 +235,22 @@ GLM、Kimi。provider id：`orcaterm`。
 > 插件调用的是 OrcaTerm 网页端使用的非公开接口，并以与官方客户端相同的方式标识自己，
 > 这可能不符合腾讯云的服务条款，接口也可能随时变更。使用风险（包括账号受限）由使用者自行承担。
 
-- **登录**：粘贴 `uin` + `skey`。这两个是**腾讯云控制台的完整会话 cookie**，不是 OrcaTerm 专用
-  令牌 —— 拿到它们就能在腾讯云范围内以你的身份操作，包括你的服务器和账单。
-  **不要用持有生产资源的账号**，想试就用一个名下没有东西的独立账号。
+- **登录**：首选**微信扫码**（`magpie plugin login orcaterm` 第一项），拿到的是 OrcaTerm 自己的
+  OAuth accessToken —— 两小时有效、自动续期、只能用于 OrcaTerm。备选是粘贴 `uin` + `skey`：
+  这两个是**腾讯云控制台的完整会话 cookie**，不是 OrcaTerm 专用令牌 —— 拿到它们就能在腾讯云范围内
+  以你的身份操作，包括你的服务器和账单。**不要用持有生产资源的账号**，想试就用一个名下没有东西的独立账号。
 - **条款**：OrcaTerm 用户协议 2.3 保留所有未明示授权的权利，2.1 把服务限定为 OrcaTerm 本身；
   内置 AI 额度是绑在产品上的资源权益，从未被授权为可外部调用的接口。相关条款还有 3.5.3、
   3.5.5、3.5.7、6.5(4) 与腾讯云服务协议 5.7(3)，后果见 4.4.1、7.2 与 5.8（可限功能、封号、终止服务）。
   一个细节：官方 OpenAPI 有会话与登录接口，**唯独没有任何 AI 问答接口**。
-- **模型**：`deepseek-chat-latest`、`hy3-preview`、`glm-4.7`、`glm-4.7-thinking`、`kimi-k2`、
-  `kimi-k2-thinking`、`hunyuan-turbos`、`hunyuan-t1`，也支持 `deepseek`/`kimi`/`glm`/`hunyuan` 简称。
-- **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。
+- **模型**：只用 OrcaTerm 模型选择器里能选到的那九个 —— `TokenHub/deepseek-v4-pro`、
+  `TokenHub/deepseek-v4-flash`、`TokenHub/deepseek-v4.1-flash`、`TokenHub/glm-5.3`、
+  `TokenHub/glm-5.3-flash`、`TokenHub/glm-5.2`、`TokenHub/kimi-k3`、`Hunyuan3/hy3`、
+  `Hunyuan3/hy4-preview`。**id 必须带命名空间前缀**，否则上游答 `LLM(x) is not loaded`。
+  **其余 id 不要用**（如 `qwen3`、`deepseek-reasoner`、`kimi-latest`、`hunyuan-turbos`、
+  `glm-4.7-thinking` 等）：它们在选择器里选不到，属于绕过界面调用，**有封号风险**。
+- **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。扫码登录的账号读不到
+  配额（额度接口只认控制台会话），这不影响使用。
 - **失败会如实报错**：上游把失败写在 SSE 里（`data: [ERROR]: …`），HTTP 状态仍是 200。
   插件会先读流头，把配额用完/限流回成 429、登录失效回成 401 并标记账号，这样 magpie 才会换账号
   或让账号歇着，而不是把失败当成一次正常回答。
