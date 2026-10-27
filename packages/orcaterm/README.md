@@ -34,9 +34,15 @@ and your billing**, and Tencent Cloud's service agreement 5.8 lets Tencent limit
 terminate that account and freeze it. **Do not use an account that owns production resources.**
 If you want to try this, use a separate account with nothing behind it.
 
-The plugin sends the pair to two hosts and no others — `lightai.cloud.tencent.com` (the assistant)
-and `api.orcaterm.cloud.tencent.com` (quota). It does not share, resell or pool quota, and it makes
-no attempt to evade anti-abuse checks. None of that changes the paragraph above.
+**The QR sign-in below does not have this problem.** It yields OrcaTerm's own OAuth access token,
+which is confined to this product and expires in two hours — it is not a console session and cannot
+reach your servers or billing. Nothing in this section applies to it. The cookie pair is the
+fallback for when scanning is not possible, and it is the one that carries the risk above.
+
+The plugin sends whichever credential it has to two hosts and no others —
+`lightai.cloud.tencent.com` (the assistant) and `api.orcaterm.cloud.tencent.com` (quota). It does not
+share, resell or pool quota, and it makes no attempt to evade anti-abuse checks. None of that changes
+the paragraph above.
 
 ### Why the terms do not clearly allow it
 
