@@ -35,12 +35,17 @@ const MODE = { react: 0, planact: 1, autoact: 2 }
 
 /**
  * 上游模型 id（前端常量 bt.*，2026-10 快照）。
- * `name` 是展示名，`id` 是真正写进请求体的 model。
+ *
+ * `id` 是真正写进请求体的 model；`name` 只在选择器里显示，所以它必须与
+ * id 一致 —— 早先把 UI 上的营销名（DeepSeek-V4-Pro、GLM-5.2、Kimi-k2.6）
+ * 当成了模型名，那些是从界面文案推的，没有依据，也和服务端实际提供的不符。
+ *
+ * 上下文与输出上限同样是估计值：上游没有公开每个模型的窗口大小。
  */
 const MODEL_SPECS = [
   {
     id: "deepseek-chat-latest",
-    name: "DeepSeek-V4-Pro",
+    name: "deepseek-chat-latest",
     reasoning: true,
     context: 128000,
     output: 32000,
@@ -49,25 +54,27 @@ const MODEL_SPECS = [
   },
   {
     id: "hy3-preview",
-    name: "Hy3-preview (混元)",
+    name: "hy3-preview",
     reasoning: true,
     context: 256000,
     output: 32000,
     tool_call: false,
-    aliases: ["hy3", "hunyuan", "hunyuan-t1", "hunyuan-3"],
+    // 早先这里挂了 "hunyuan-t1" 别名，但下面有真正的 hunyuan-t1 模型，
+    // 别名会被那个模型覆盖，写在这里只是误导。
+    aliases: ["hy3", "hunyuan", "hunyuan-3"],
   },
   {
     id: "glm-4.7",
-    name: "GLM-5.2 (智谱)",
+    name: "glm-4.7",
     reasoning: false,
     context: 200000,
     output: 32000,
     tool_call: false,
-    aliases: ["glm", "glm-4.7", "glm-5", "glm-5.2", "bigmodel"],
+    aliases: ["glm", "glm-5", "glm-5.2", "bigmodel"],
   },
   {
     id: "glm-4.7-thinking",
-    name: "GLM-5.2 Thinking",
+    name: "glm-4.7-thinking",
     reasoning: true,
     context: 200000,
     output: 32000,
@@ -76,16 +83,16 @@ const MODEL_SPECS = [
   },
   {
     id: "kimi-k2",
-    name: "Kimi-k2.6 (月之暗面)",
+    name: "kimi-k2",
     reasoning: false,
     context: 256000,
     output: 32000,
     tool_call: false,
-    aliases: ["kimi", "kimi-k2", "kimi-k2.6", "moonshot"],
+    aliases: ["kimi", "kimi-k2.6", "moonshot"],
   },
   {
     id: "kimi-k2-thinking",
-    name: "Kimi-k2 Thinking",
+    name: "kimi-k2-thinking",
     reasoning: true,
     context: 256000,
     output: 32000,
@@ -94,16 +101,16 @@ const MODEL_SPECS = [
   },
   {
     id: "hunyuan-turbos",
-    name: "Hunyuan TurboS",
+    name: "hunyuan-turbos",
     reasoning: false,
     context: 128000,
     output: 16000,
     tool_call: false,
-    aliases: ["hunyuan-turbos", "turbos"],
+    aliases: ["turbos"],
   },
   {
     id: "hunyuan-t1",
-    name: "Hunyuan T1",
+    name: "hunyuan-t1",
     reasoning: true,
     context: 128000,
     output: 16000,
@@ -134,36 +141,6 @@ function csrfCode(skey) {
   return String(h & 0x7fffffff)
 }
 
-/** OrcaTerm 网页 OAuth 入口（纯前端跳转，不需要凭据；2026-10 实测只支持 wechat） */
-const OAUTH_ORIGIN = "https://orcaterm.com"
-const OAUTH_PROVIDER = "wechat"
-
-/**
- * 构造 OrcaTerm 登录页 URL。
- * 与前端 bundle 里的 `l(e)` 一致：/oauth/authorize?provider=…&source=web&return_url=…
- */
-function loginUrl(provider = OAUTH_PROVIDER, returnUrl = "https://orcaterm.cloud.tencent.com/terminal") {
-  const u = new URL(`${OAUTH_ORIGIN}/oauth/authorize`)
-  u.searchParams.set("provider", provider)
-  u.searchParams.set("source", "web")
-  u.searchParams.set("return_url", returnUrl)
-  return u.toString()
-}
-
-/** cgi/api 的 action 签名（前端 89596.Td），失败时上游回 VERIFY_USER_FAILED */
-function actionSignature(fields) {
-  const parts = Object.keys(fields)
-    .filter((k) => fields[k] !== undefined && fields[k] !== null && fields[k] !== "")
-    .sort()
-    .map((k) => `${k}=${fields[k]}`)
-    .join("&")
-  return createHash("sha1").update(parts).digest("hex")
-}
-
-/**
- * 把用户贴进来的东西解析成凭据。
- * 支持：整段 cookie 字符串 / `uin=o123; skey=xxx` / 裸 skey / skey-uin 组合。
- */
 function parseTicket(raw) {
   const text = String(raw ?? "").trim()
   if (!text) return null
@@ -387,14 +364,21 @@ function toUpstreamBody(body, { conversationId, userId }) {
         enableThinking: false,
         language: "zh",
         multimodal: false,
-        // 关掉上游自带的工具/MCP，纯问答最稳
+        // 关掉上游自带的工具与 MCP，让这次请求只做问答。
+        //
+        // 注意：这些字段是「不给它工具」，不是「禁止它动手」。assistant 跑在
+        // RE_ACT 模式下，上游仍可能自己决定调用内置能力（比如在用户的服务器上
+        // 执行命令）。这一点无法从这个插件侧确认，所以：
+        //   - 不声明任何工具、不批准任何工具；
+        //   - hideToolMessage: false —— 万一真的调用了，痕迹会出现在回复里，
+        //     用户能看见，而不是被悄悄隐掉。
         tools: [],
         mcpServers: [],
         uiServers: [],
         approvedTools: [],
         approvedMCPTools: [],
-        hideToolMessage: true,
-        isNormalToolMessageIgnored: true,
+        hideToolMessage: false,
+        isNormalToolMessageIgnored: false,
       },
     },
     input: {
@@ -465,30 +449,169 @@ function parseSseLine(line) {
 }
 
 /**
+ * `fullContent` 是累计全文，换算成这一帧该发的增量。
+ *
+ * 两种情况：
+ *   - 它在已发内容之上继续（前缀相同）→ 差集就是增量；
+ *   - 它改写了前面（前缀不同）→ 差值没有意义，直接发整段重来，
+ *     让客户端看到完整的新正文，而不是把两段拼成乱码。
+ *     早先的实现只做 slice(sent.length)，"abc" 之后来 "xyzw" 会变成 "w"。
+ */
+function fullToDelta(full, sent) {
+  if (full === sent) return ""
+  if (full.startsWith(sent)) return full.slice(sent.length)
+  return full
+}
+
+/**
+ * 上游的错误码 → 我们回给 magpie 的状态。
+ *
+ * 实测（2026-10-27）OrcaTerm 的 AI 网关用 SSE 里的 `[ERROR]: …` 表达失败，
+ * 配额用完、限流、模型不可用都是这样，HTTP 状态仍然是 200。
+ * 如果原样当正文回给客户端，magpie 会以为这是一次正常回答：
+ * 不会故障切换到下一个账号，也不会让这个账号歇一会儿 —— 所以必须转成错误状态。
+ */
+const ERROR_MAP = [
+  // 月度额度用完：换账号有意义，标 429 让 magpie 换下一个
+  { re: /quota|exceeded|额度|次数已用完|余额不足/i, status: 429, type: "rate_limit_error" },
+  // 限流：同上，但要等一会儿
+  { re: /rate.?limit|too many|频繁|限流/i, status: 429, type: "rate_limit_error" },
+  // 登录态问题：标记账号需要重登
+  { re: /NEED_UIN_AND_SKEY|VERIFY_SKEY_UIN_FAILED|VERIFY_LOGIN_FAILED|VERIFY_USER_FAILED|unauthorized|登录/i, status: 401, type: "authentication_error" },
+]
+
+/** 从上游的错误文本判断该回什么状态。 */
+function errorStatus(text) {
+  const t = String(text ?? "")
+  for (const m of ERROR_MAP) {
+    if (m.re.test(t)) return m
+  }
+  // 其余上游错误（模型不可用、内部错误）算服务端故障，让 magpie 故障切换
+  return { status: 502, type: "upstream_error" }
+}
+
+/** 流头最多读这么多，够看清第一帧是回答还是错误。 */
+const SSE_PEEK_LIMIT = 8 * 1024
+
+/**
+ * 读流头直到能判断这是回答还是错误 —— 照 packages/codearts 的 peekAnswer。
+ *
+ * 返回 { verdict, code, chunks, reader, text }：
+ *   verdict 是 "answer" 或 "error"；chunks 是已读的原始字节，必须回放，
+ *   否则开头那段正文会丢。
+ */
+async function peekAnswer(body) {
+  const head = { verdict: "", code: "", chunks: [], reader: null, text: "", decoder: new TextDecoder() }
+  if (!body) return head
+  head.reader = body.getReader()
+  let done = false
+  for (;;) {
+    const v = classifyHead(head.text, done)
+    if (v) {
+      head.verdict = v
+      break
+    }
+    if (head.text.length >= SSE_PEEK_LIMIT) break
+    const r = await head.reader.read()
+    if (r.done) {
+      done = true
+      continue
+    }
+    head.chunks.push(r.value)
+    head.text += head.decoder.decode(r.value, { stream: true })
+  }
+  if (head.verdict === "error") {
+    // 错误流直接丢弃；cancel 不 await，活体上可能挂住
+    void head.reader.cancel().catch(() => {})
+  }
+  return head
+}
+
+/**
+ * 看已读到的头部里有没有错误帧。
+ * `done` 为真时还没见到错误，就说明这段流是正常回答（或空回答）。
+ */
+function classifyHead(text, done) {
+  const [lines] = takeSseLines(text)
+  for (const line of lines) {
+    const ev = parseSseLine(line)
+    if (!ev) continue
+    if (ev.error) return "error"
+    // 见到正文就说明是回答，不必再等
+    if (ev.content || ev.reasoning || typeof ev.full === "string") return "answer"
+  }
+  if (done) return "answer"
+  return ""
+}
+
+/** 从已读到的流头里取出上游的错误文本。 */
+function errorCodeFromHead(text) {
+  const [lines] = takeSseLines(text)
+  for (const line of lines) {
+    const ev = parseSseLine(line)
+    if (ev?.error) return ev.error
+  }
+  return "上游返回了错误"
+}
+
+/** 把 peek 读到的字节接回流里，再继续读剩余部分。 */
+function replayBody(head) {
+  let i = 0
+  return new ReadableStream({
+    async pull(controller) {
+      if (i < head.chunks.length) {
+        controller.enqueue(head.chunks[i++])
+        return
+      }
+      try {
+        const r = await head.reader.read()
+        if (r.done) {
+          controller.close()
+          return
+        }
+        controller.enqueue(r.value)
+      } catch (err) {
+        controller.error(err)
+      }
+    },
+    cancel(reason) {
+      return head.reader.cancel(reason).catch(() => {})
+    },
+  })
+}
+
+/**
  * 把上游 SSE 字节流转成 OpenAI chat.completion.chunk 流。
  * 上游给的是「累计全文」式增量（content 为本次新增），因此直接对外发 delta；
  * 若发现上游发的是累计值（比已发长度长且以已发内容开头），则换算成增量。
  */
-function upstreamToOpenAI(upstreamBody, { model, includeUsage, requestBody }) {
+function upstreamToOpenAI(upstreamBody, { model }) {
   const encoder = new TextEncoder()
   const id = uid("chatcmpl-")
   const created = Math.floor(Date.now() / 1000)
   let sentContent = ""
   let sentReasoning = ""
   let emitText = 0
-  let emitReason = 0
   let closed = false
   let reader = null
 
-  // 客户端断连 / 主动取消时要能反手关掉上游，否则连接会泄漏
+  // 客户端断连 / 主动取消时要能反手关掉上游，否则连接会泄漏。
+  //
+  // 只走 reader：一旦 getReader() 过了，body 就是 locked 的，
+  // 再调 upstreamBody.cancel() 会抛 "Cannot cancel a locked ReadableStream"。
+  // reader.cancel() 会返回 promise，这里不 await —— 活体上可能挂住。
   const releaseUpstream = () => {
-    try {
-      reader?.cancel?.()
-    } catch {
-      /* ignore */
+    if (!reader) {
+      try {
+        upstreamBody?.cancel?.()?.catch?.(() => {})
+      } catch {
+        /* ignore */
+      }
+      return
     }
     try {
-      upstreamBody.cancel?.()
+      const r = reader.cancel()
+      if (r && typeof r.catch === "function") r.catch(() => {})
     } catch {
       /* ignore */
     }
@@ -518,23 +641,9 @@ function upstreamToOpenAI(upstreamBody, { model, includeUsage, requestBody }) {
         }
         closed = true
         push(chunk({}, reason))
-        if (includeUsage) {
-          push(
-            `data: ${JSON.stringify({
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [],
-              usage: {
-                prompt_tokens: estimateTokens(requestBody),
-                completion_tokens: Math.ceil((sentContent.length + sentReasoning.length) / 2),
-                total_tokens:
-                  estimateTokens(requestBody) + Math.ceil((sentContent.length + sentReasoning.length) / 2),
-              },
-            })}\n\n`,
-          )
-        }
+        // 不报 usage：上游不返回 token 数，这里的字符数估算只是估算。
+        // 把它当真实用量报给 magpie，会让费用和上下文统计都是错的；
+        // 宁可不报，让客户端知道「没有这个数」。
         push("data: [DONE]\n\n")
         controller.close()
       }
@@ -560,57 +669,29 @@ function upstreamToOpenAI(upstreamBody, { model, includeUsage, requestBody }) {
               return
             }
             if (ev.error) {
-              push(
-                `data: ${JSON.stringify({
-                  id,
-                  object: "chat.completion.chunk",
-                  created,
-                  model,
-                  choices: [{ index: 0, delta: { content: `\n[OrcaTerm] ${ev.error}` }, finish_reason: null }],
-                })}\n\n`,
-              )
-              emitText += 1
-              finishUp("stop", { skipReasoningFallback: true })
+              // 流到一半才失败：让这条流以错误结束，而不是发一段正文再正常收尾。
+              // 后者会让 magpie 把这次当成功，既不故障切换也不让账号歇着。
+              closed = true
+              const m = errorStatus(ev.error)
+              controller.error(Object.assign(new Error(`OrcaTerm: ${ev.error}`), { statusCode: m.status }))
+              releaseUpstream()
               return
             }
 
-            let textDelta = ev.content ?? ""
-            // 上游可能只给 fullContent（累计全文）：以它为准换算增量
-            if (typeof ev.full === "string") {
-              if (ev.full.startsWith(sentContent)) {
-                textDelta = ev.full.slice(sentContent.length)
-              } else if (ev.full.length > sentContent.length) {
-                textDelta = ev.full.slice(sentContent.length)
-              } else {
-                textDelta = ""
-              }
-            } else if (
-              // 兼容「累计式」content：若新内容以已发内容开头，取增量
-              textDelta &&
-              sentContent &&
-              textDelta.startsWith(sentContent) &&
-              textDelta.length > sentContent.length
-            ) {
-              textDelta = textDelta.slice(sentContent.length)
-            }
+            // `content` 是这一帧的增量，直接用；只有 `fullContent`（累计全文）
+            // 需要换算成增量。曾经把「以已发内容开头」的 content 当成累计值
+            // 来截断，那是错的：帧 "ha" 之后来 "haha" 会被截成 ""，正文丢失。
+            const textDelta = typeof ev.full === "string" ? fullToDelta(ev.full, sentContent) : (ev.content ?? "")
             if (textDelta) {
               sentContent += textDelta
               emitText += textDelta.length
               push(chunk({ content: textDelta }))
             }
 
+            // 思考内容同理：content 式增量直发，fullContent 式换算
             let reasonDelta = ev.reasoning ?? ""
-            if (
-              reasonDelta &&
-              sentReasoning &&
-              reasonDelta.startsWith(sentReasoning) &&
-              reasonDelta.length > sentReasoning.length
-            ) {
-              reasonDelta = reasonDelta.slice(sentReasoning.length)
-            }
             if (reasonDelta) {
               sentReasoning += reasonDelta
-              emitReason += reasonDelta.length
               push(chunk({ reasoning_content: reasonDelta }))
             }
           }
@@ -620,44 +701,31 @@ function upstreamToOpenAI(upstreamBody, { model, includeUsage, requestBody }) {
         for (const line of pending) {
           const ev = parseSseLine(line)
           if (!ev || ev.done || ev.error) continue
-          let d = ev.content ?? ""
-          if (d && sentContent && d.startsWith(sentContent) && d.length > sentContent.length) {
-            d = d.slice(sentContent.length)
-          }
+          const d = typeof ev.full === "string" ? fullToDelta(ev.full, sentContent) : (ev.content ?? "")
           if (d) {
             sentContent += d
             emitText += d.length
             push(chunk({ content: d }))
           }
-          let r = ev.reasoning ?? ""
-          if (r && sentReasoning && r.startsWith(sentReasoning) && r.length > sentReasoning.length) {
-            r = r.slice(sentReasoning.length)
-          }
+          const r = ev.reasoning ?? ""
           if (r) {
             sentReasoning += r
-            emitReason += r.length
             push(chunk({ reasoning_content: r }))
           }
         }
         finishUp("stop")
       } catch (err) {
+        // 读流时中断（abort / 连接重置）：这条流必须以错误结束。
+        // 早先在这里补一段「连接中断」正文再 stop，客户端会当成正常回答，
+        // magpie 也就不故障切换了。
         if (!closed) {
-          push(
-            `data: ${JSON.stringify({
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [
-                {
-                  index: 0,
-                  delta: { content: `\n[OrcaTerm] 连接中断：${err?.message ?? err}` },
-                  finish_reason: "stop",
-                },
-              ],
-            })}\n\n`,
+          closed = true
+          controller.error(
+            Object.assign(new Error(`OrcaTerm 连接中断：${err?.message ?? err}`), {
+              statusCode: err?.name === "AbortError" ? 499 : 502,
+            }),
           )
-          finishUp("stop")
+          releaseUpstream()
         }
       }
     },
@@ -676,18 +744,7 @@ function upstreamToOpenAI(upstreamBody, { model, includeUsage, requestBody }) {
   })
 }
 
-function estimateTokens(body) {
-  try {
-    // 注意：要传 OpenAI 的原始 body（有 messages），不是转换后的上游 body
-    const n = JSON.stringify(body?.messages ?? body ?? "").length
-    return Math.max(1, Math.ceil(n / 3))
-  } catch {
-    return 1
-  }
-}
-
-/** 非流式：把整段读完成后一次性回 chat.completion */
-async function upstreamToJSON(upstreamBody, { model, upstreamReqBody, requestBody }) {
+async function upstreamToJSON(upstreamBody, { model }) {
   const reader = upstreamBody.getReader()
   const decoder = new TextDecoder()
   let buf = ""
@@ -707,19 +764,15 @@ async function upstreamToJSON(upstreamBody, { model, upstreamReqBody, requestBod
       upstreamError = ev.error
       return
     }
-    // 上游可能只给 fullContent（累计全文），与流式路径保持一致：以它为准
+    // 与流式路径同一规则：content 是增量，fullContent 才需要换算
     if (typeof ev.full === "string") {
-      if (ev.full.startsWith(content)) content = ev.full
-      else if (ev.full.length > content.length) content = ev.full
+      const d = fullToDelta(ev.full, content)
+      content += d
     } else if (ev.content) {
-      const d = ev.content
-      if (content && d.startsWith(content) && d.length > content.length) content = d
-      else content += d
+      content += ev.content
     }
     if (ev.reasoning) {
-      const d = ev.reasoning
-      if (reasoning && d.startsWith(reasoning) && d.length > reasoning.length) reasoning = d
-      else reasoning += d
+      reasoning += ev.reasoning
     }
   }
 
@@ -728,28 +781,10 @@ async function upstreamToJSON(upstreamBody, { model, upstreamReqBody, requestBod
     try {
       chunkRead = await reader.read()
     } catch (err) {
-      // 客户端 abort / 网络中断：不能把异常抛给 magpie（那边会当成插件崩溃），
-      // 回一个明确的错误 Response，让故障切换照常进行。
+      // 客户端 abort / 连接中断：回真正的错误状态，不能伪装成一条回答。
+      // 早先这里回 200 + 「连接中断」正文，magpie 会当成成功，故障切换就停了。
       const aborted = err?.name === "AbortError"
-      const prompt_tokens = estimateTokens(requestBody ?? upstreamReqBody)
-      return new Response(
-        JSON.stringify({
-          id: uid("chatcmpl-"),
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model,
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content: `[OrcaTerm] ${aborted ? "客户端已取消请求" : "连接中断"}` },
-              finish_reason: "stop",
-              logprobs: null,
-            },
-          ],
-          usage: { prompt_tokens, completion_tokens: 1, total_tokens: prompt_tokens + 1 },
-        }),
-        { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
-      )
+      return openaiError(aborted ? 499 : 502, `OrcaTerm 连接中断：${err?.message ?? err}`)
     }
     const { done, value } = chunkRead
     if (done) break
@@ -764,12 +799,15 @@ async function upstreamToJSON(upstreamBody, { model, upstreamReqBody, requestBod
   }
   if (buf.trim() && !sawDone) absorb(buf)
 
-  const prompt_tokens = estimateTokens(requestBody ?? upstreamReqBody)
-  const completion_tokens = Math.max(1, Math.ceil((content.length + reasoning.length) / 2))
-  // 正文为空时不能交白卷：优先用思考内容，再退到错误说明
+  // 上游以错误收尾（配额、限流、登录）→ 回真实错误状态
+  if (upstreamError) {
+    const m = errorStatus(upstreamError)
+    return openaiError(m.status, `OrcaTerm: ${upstreamError}`)
+  }
+
+  // 正文为空时不能交白卷：优先用思考内容，再退到说明
   let finalContent = content
   if (!finalContent && reasoning) finalContent = reasoning
-  if (!finalContent && upstreamError) finalContent = `[OrcaTerm] ${upstreamError}`
   if (!finalContent) finalContent = "（OrcaTerm 返回了空回复）"
   const message = { role: "assistant", content: finalContent }
   if (reasoning) message.reasoning_content = reasoning
@@ -780,7 +818,6 @@ async function upstreamToJSON(upstreamBody, { model, upstreamReqBody, requestBod
       created: Math.floor(Date.now() / 1000),
       model,
       choices: [{ index: 0, message, finish_reason: "stop", logprobs: null }],
-      usage: { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens },
     }),
     { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
   )
@@ -807,7 +844,7 @@ function openaiError(status, message, code = "upstream_error") {
 }
 
 // ── 上游调用：一次 assistant/chat（流式），失败可判读 ────────────────────────
-async function callAssistant({ auth, upstream, model, assistant, mode, signal, seqId }) {
+async function callAssistant({ auth, upstream, model, assistant, mode, signal }) {
   const skey = auth?.ticket?.skey
   const csrf = csrfCode(skey)
   const url = `${ASSISTANT_BASE}/chat?name=${encodeURIComponent(assistant)}&mode=${mode}&csrfCode=${csrf}`
@@ -815,7 +852,9 @@ async function callAssistant({ auth, upstream, model, assistant, mode, signal, s
   body.user.setting.model = model
 
   const headers = baseHeaders({
-    "x-seqid": seqId || body.input.id,
+    // x-seqid 是「这一次请求」的 id，不是会话 id：网页端每发一次都生成新的，
+    // 复用一个固定的值可能让上游把多次请求当成同一次。
+    "x-seqid": body.input.id,
     cookie: cookieHeader(auth),
   })
 
@@ -863,84 +902,10 @@ async function classifyUpstreamError(res) {
  *   - uin + skey 且真实             → 直接开始出 SSE 帧
  * 所以「拿到非鉴权类错误」就等于凭据是有效的。
  */
-async function verifyTicket(ticket, { timeoutMs = 20000 } = {}) {
-  const skey = ticket?.skey
-  if (!skey || !ticket?.uin) {
-    return { ok: false, reason: "uin 与 skey 必须成对提供" }
-  }
-  const body = {
-    conversationId: `cid-verify-${Date.now()}`,
-    user: { id: ticket.uin, setting: { model: MODEL_SPECS[0].id } },
-    input: { id: `verify-${Date.now()}`, content: "ping", files: [], historyMessages: [] },
-    stream: true,
-  }
-  let res
-  try {
-    res = await fetch(
-      `${ASSISTANT_BASE}/chat?name=${ASSISTANT.orcaterm}&mode=${MODE.react}&csrfCode=${csrfCode(skey)}`,
-      {
-        method: "POST",
-        headers: baseHeaders({ "x-seqid": body.input.id, cookie: cookieHeader({ ticket }) }),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
-      },
-    )
-  } catch (err) {
-    // 网络不通不代表凭据有问题；放行，让真正请求时再报
-    return { ok: true, reason: `无法在线校验（${err?.message ?? err}），已跳过` }
-  }
-
-  const ctype = res.headers.get("content-type") ?? ""
-  if (ctype.includes("event-stream")) {
-    // 真的开始出帧了：凭据有效
-    try {
-      await res.body?.cancel?.()
-    } catch {
-      /* ignore */
-    }
-    return { ok: true, reason: "" }
-  }
-
-  let text = ""
-  try {
-    text = await res.text()
-  } catch {
-    /* ignore */
-  }
-  // 上游错误体有两种形状：{code, message, error:{name,message}} 与 {data:{Response:{Error:{Code}}}}
-  // 注意 error.name 只是 HTTP 状态文案（"Internal Server Error"），真正的错误码在 message 里
-  let code = ""
-  try {
-    const j = JSON.parse(text)
-    const parts = [
-      j?.message,
-      j?.error?.message,
-      j?.code,
-      j?.data?.Response?.Error?.Code,
-      j?.data?.Response?.Error?.Message,
-      j?.Response?.Error?.Code,
-    ].filter((v) => v !== undefined && v !== null && String(v).trim())
-    code = parts.join(" | ")
-  } catch {
-    code = text.slice(0, 200)
-  }
-  if (/NEED_UIN_AND_SKEY/i.test(code)) {
-    return { ok: false, reason: "上游没接受这组 cookie（需要 uin 与 skey 同时存在）" }
-  }
-  if (/VERIFY_SKEY_UIN_FAILED|VERIFY_LOGIN_FAILED|VERIFY_USER_FAILED/i.test(code)) {
-    return { ok: false, reason: "skey 已过期，或与这个 uin 不匹配" }
-  }
-  // 其它错误（限流、风控、5xx）说明凭据本身是通的
-  return { ok: true, reason: "" }
-}
-
-// ── 用量（cgi/api DescribeUserUsageStats） ────────────────────────────────
 async function capiRequest(auth, action, data = {}) {
   const t = auth?.ticket ?? {}
   const seq = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`
   const uin = t.uin || t.p_uin || ""
-  const fields = { action, uin, ownerUin: uin }
-  const sig = actionSignature(fields)
   const url = `${CAPI_URL}?action=${encodeURIComponent(action)}&t=${seq}`
   const res = await fetch(url, {
     method: "POST",
@@ -1080,7 +1045,6 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
             const requested = openaiBody?.model
             const model = resolveModel(requested)
             const stream = openaiBody?.stream !== false
-            const includeUsage = openaiBody?.stream_options?.include_usage === true
 
             const upstream = toUpstreamBody(openaiBody, session)
 
@@ -1093,8 +1057,6 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
                 assistant: ASSISTANT.orcaterm,
                 mode: MODE.react,
                 signal: init?.signal,
-                // chat.headers 写进来的会话 id：同一段对话用同一个 seqid
-                seqId: inHeaders.get("x-orcaterm-session") || undefined,
               })
             } catch (err) {
               // 中断（客户端放弃）不该被当成上游故障
@@ -1142,8 +1104,23 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
             // content-type 缺失也要兜底：没有 body 就直接报错，别静默空回答
             if (!res.body) return openaiError(502, "OrcaTerm 返回了空响应")
 
-            if (stream) return upstreamToOpenAI(res.body, { model, includeUsage, requestBody: openaiBody })
-            return upstreamToJSON(res.body, { model, upstreamReqBody: upstream, requestBody: openaiBody })
+            // 上游用 `data: [ERROR]: …` 表达失败，HTTP 状态仍是 200。
+            // 先读流头判断这是回答还是错误：配额用完要回 429 让 magpie 换账号，
+            // 登录失效要回 401 标记账号 —— 否则失败会被当成正常回答。
+            const head = await peekAnswer(res.body)
+            if (head.verdict === "error") {
+              const code = errorCodeFromHead(head.text)
+              const m = errorStatus(code)
+              const e = openaiError(m.status, `OrcaTerm: ${code}`, m.type)
+              if (m.status === 401) e.headers.set("x-magpie-sign-in", "expired")
+              return e
+            }
+
+            // 已经把流头读掉了，接回去再交给后面的转换，否则开头正文会丢
+            const body = head.chunks.length ? replayBody(head) : res.body
+
+            if (stream) return upstreamToOpenAI(body, { model })
+            return upstreamToJSON(body, { model })
           },
         }
       },
@@ -1228,14 +1205,6 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
 
     },
 
-    // ── 每个账号的模型列表：上游目录会变，这里按账号实测一次 ────────────────
-    provider: {
-      id: PROVIDER,
-      async models(provider, { auth } = {}) {
-        return provider.models
-      },
-    },
-
     // ── 会话头：把 magpie 的会话 id 带到 fetch，用来给上游分会话 ─────────────
     // magpie 的 input.sessionID 在同一段对话的各轮之间保持不变，
     // 用它派生 conversationId，避免同一账号下不同对话串上下文。
@@ -1248,15 +1217,6 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
       }
     },
   }
-}
-
-function pickNumber(obj, keys) {
-  for (const k of keys) {
-    const v = obj?.[k]
-    if (typeof v === "number" && Number.isFinite(v)) return v
-    if (typeof v === "string" && v.trim() && !Number.isNaN(Number(v))) return Number(v)
-  }
-  return null
 }
 
 function toIso(v) {
@@ -1273,21 +1233,17 @@ export const _internal = {
   ASSISTANT_BASE,
   CAPI_URL,
   csrfCode,
-  actionSignature,
   parseTicket,
   cookieHeader,
   fingerprint,
-  loginUrl,
-  verifyTicket,
-  OAUTH_PROVIDER,
   bodyToText,
   resolveModel,
   toUpstreamBody,
   parseSseLine,
+  fullToDelta,
+  errorStatus,
   upstreamToOpenAI,
   openaiError,
-  modelsBlockFor: () =>
-    Object.fromEntries(MODEL_SPECS.map((s) => [s.id, { name: s.name, id: s.id }])),
 }
 
 

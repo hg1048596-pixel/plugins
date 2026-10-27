@@ -80,16 +80,18 @@ test("a stream with no [DONE] is still finished", async () => {
   expect(hasStop).toBe(true)
 })
 
-// A refusal arriving mid-stream is shown to the user rather than dropped.
-test("an upstream error frame reaches the answer", async () => {
+// A refusal arriving mid-stream must error the stream, not become answer
+// text: as text it would read as a successful reply, and magpie would neither
+// fail over nor rest the account.
+test("an upstream error frame errors the stream", async () => {
   const body = new ReadableStream({
     start(c) {
       c.enqueue(new TextEncoder().encode("data: [ERROR]: quota exhausted\n\n"))
       c.close()
     },
   })
-  const text = await _internal.upstreamToOpenAI(body, { model: "m" }).text()
-  expect(text).toContain("quota exhausted")
+  const res = _internal.upstreamToOpenAI(body, { model: "m" })
+  await expect(res.text()).rejects.toThrow(/quota exhausted/)
 })
 
 // The OpenAI response must not carry the upstream's framing headers: the
