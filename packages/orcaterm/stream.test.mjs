@@ -5,6 +5,11 @@
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
+// The suite fires far more than the account's ten-a-minute budget; lift the
+// pacer so these tests measure the plugin, not the limiter.
+process.env.ORCATERM_NO_PACE = "1"
+
+
 const sse = (frames) => frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") + "data: [DONE]\n\n"
 
 const stream = (frames) => {

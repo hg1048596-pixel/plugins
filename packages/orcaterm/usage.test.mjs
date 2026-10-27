@@ -5,6 +5,11 @@
 import { afterEach, expect, test } from "bun:test"
 import { OrcaTermAuthPlugin } from "./index.mjs"
 
+// The suite fires far more than the account's ten-a-minute budget; lift the
+// pacer so these tests measure the plugin, not the limiter.
+process.env.ORCATERM_NO_PACE = "1"
+
+
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
 

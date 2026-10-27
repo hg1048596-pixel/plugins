@@ -6,6 +6,11 @@
 import { expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 
+// The suite fires far more than the account's ten-a-minute budget; lift the
+// pacer so these tests measure the plugin, not the limiter.
+process.env.ORCATERM_NO_PACE = "1"
+
+
 const turn = (messages) => _internal.toUpstreamBody({ messages }, { conversationId: "cid-1", userId: "u-1" })
 
 test("system text is carried as a prefix, the last user turn as the input", () => {
@@ -16,13 +21,17 @@ test("system text is carried as a prefix, the last user turn as the input", () =
     { role: "user", content: "second" },
   ])
   expect(up.conversationId).toBe("cid-1")
-  expect(up.input.content.startsWith("[系统指令")).toBe(true)
-  expect(up.input.content.endsWith("second")).toBe(true)
-  // the two earlier turns travel as history, in order
-  expect(up.input.historyMessages).toEqual([
-    { role: "user", content: "first" },
-    { role: "assistant", content: "first answer" },
-  ])
+  expect(up.input.input.startsWith("[系统指令")).toBe(true)
+  expect(up.input.input.endsWith("second")).toBe(true)
+  // The earlier turns travel as a transcript in the text: magpie gives every
+  // request a fresh sessionID, so nothing on the wire can rely on server-side
+  // conversation state (measured 2026-10-27).
+  expect(up.input.input).toContain("[此前的对话]")
+  expect(up.input.input).toContain("用户：first")
+  expect(up.input.input).toContain("助手：first answer")
+  // and nothing goes up as historyMessages
+  expect(up.input.historyMessages).toEqual([])
+  expect(up.input.type).toBe("start")
   expect(up.stream).toBe(true)
 })
 
@@ -34,18 +43,19 @@ test("tool calls and their results become text, nothing is lost", () => {
     { role: "assistant", content: "", tool_calls: [{ id: "c1", function: { name: "get_weather", arguments: '{"city":"SZ"}' } }] },
     { role: "tool", tool_call_id: "c1", content: "sunny 30C" },
   ])
-  const all = [up.input.content, ...up.input.historyMessages.map((m) => m.content)].join("\n")
+  // no history is sent, so the tool traffic has to ride along in the text
+  const all = up.input.input
   expect(all).toContain("get_weather")
   expect(all).toContain("sunny 30C")
   // the tool result is the last turn, so it is what gets asked
-  expect(up.input.content).toContain("工具结果")
+  expect(up.input.input).toContain("工具结果")
 })
 
 // An empty input is answered with a 400 by the assistant, so an empty
 // conversation has to be given something to reply to.
 test("an empty conversation still sends a non-empty input", () => {
-  expect(turn([]).input.content.trim().length).toBeGreaterThan(0)
-  expect(turn([{ role: "system", content: "be brief" }]).input.content.trim().length).toBeGreaterThan(0)
+  expect(turn([]).input.input.trim().length).toBeGreaterThan(0)
+  expect(turn([{ role: "system", content: "be brief" }]).input.input.trim().length).toBeGreaterThan(0)
 })
 
 test("image parts are noted, text parts kept", () => {
@@ -58,19 +68,56 @@ test("image parts are noted, text parts kept", () => {
       ],
     },
   ])
-  expect(up.input.content).toContain("look")
-  expect(up.input.content).toContain("[图片]")
+  expect(up.input.input).toContain("look")
+  expect(up.input.input).toContain("[图片]")
 })
 
 // A model id magpie may pass with its provider prefix, in any case, with
 // padding — and one it doesn't know, which must reach the endpoint as is
 // rather than be swallowed.
 test("model ids resolve through aliases, prefixes and case", () => {
-  expect(_internal.resolveModel("deepseek")).toBe("deepseek-chat-latest")
-  expect(_internal.resolveModel("orcaterm/kimi")).toBe("kimi-k2")
+  expect(_internal.resolveModel("deepseek")).toBe("TokenHub/deepseek-v4-pro")
+  expect(_internal.resolveModel("orcaterm/kimi")).toBe("TokenHub/kimi-k3")
   expect(_internal.resolveModel("  GLM-4.7-THINKING  ")).toBe("glm-4.7-thinking")
   expect(_internal.resolveModel("some-new-model")).toBe("some-new-model")
   // a bare prefix must fall back to a real model, not send an empty id
-  expect(_internal.resolveModel("orcaterm/")).toBe("deepseek-chat-latest")
-  expect(_internal.resolveModel(undefined)).toBe("deepseek-chat-latest")
+  expect(_internal.resolveModel("orcaterm/")).toBe("TokenHub/deepseek-v4-pro")
+  expect(_internal.resolveModel(undefined)).toBe("TokenHub/deepseek-v4-pro")
+})
+
+// OrcaTerm's picker shows a label, and the id sent upstream is a different
+// string (`newModelId` vs `modelName` in its own table). Sending the label is
+// what made upstream answer "LLM(x) is not loaded", and `hy3-preview` is a
+// label, not an id — it answers 401. The label must resolve to the working id.
+test("labels resolve to the ids upstream actually serves", () => {
+  expect(_internal.resolveModel("Hy3-preview")).toBe("Hunyuan3/hy3")
+  expect(_internal.resolveModel("hy3-preview")).toBe("Hunyuan3/hy3")
+  expect(_internal.resolveModel("Deepseek-V4-Pro")).toBe("TokenHub/deepseek-v4-pro")
+  expect(_internal.resolveModel("GLM-5.2")).toBe("TokenHub/glm-5.2")
+  expect(_internal.resolveModel("Kimi-k2.6")).toBe("TokenHub/kimi-k3")
+})
+
+// Upstream answered `Invalid inputId: in-…` to the ids this plugin used to
+// invent, so the shape matters: the web client sends a plain uuid v4 in
+// `input.id` (module 73383's Ub) and the same value in `x-seqid`. A prefix of
+// our own, however unique, is not that.
+test("the input id is the web client's uuid v4, and x-seqid is that same id", async () => {
+  const up = turn([{ role: "user", content: "hi" }])
+  expect(up.input.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  // and a fresh one per request, never a fixed value
+  expect(turn([{ role: "user", content: "hi" }]).input.id).not.toBe(up.input.id)
+})
+
+// Upstream does not answer in prose: the whole reply is the assistant's own
+// message object, and the text is its taskCompletion. Passed on raw, an agent
+// showed `{"action": "completion", …}` as the answer.
+test("the answer is unwrapped from the action envelope, alone or after prose", () => {
+  const one = JSON.stringify({ action: "completion", ph_1: "--", taskCompletion: "答案" })
+  expect(_internal.unwrapAnswer(one)).toBe("答案")
+  // fenced the way the assistant fences code
+  expect(_internal.unwrapAnswer("```json\n" + one + "\n```")).toBe("答案")
+  // prose first, envelope after it: the prose is the answer
+  expect(_internal.stripTrailingEnvelope("已记住。\n" + one)).toBe("已记住。\n")
+  // and a reply that is not an envelope is left alone
+  expect(_internal.unwrapAnswer("用 {花括号} 表示集合")).toBe("用 {花括号} 表示集合")
 })
