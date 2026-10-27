@@ -1,0 +1,20 @@
+{
+  "name": "@magpie-community/opencode-orcaterm-auth",
+  "version": "0.1.0",
+  "description": "OrcaTerm (Tencent Cloud 遨驰终端) AI quota as an OpenAI-compatible provider for magpie and OpenCode",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "orcaterm", "tencent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/orcaterm"
+  },
+  "magpie": {
+    "maxConcurrency": 2,
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='a' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%231C74C7'/%3E%3Cstop offset='.55' stop-color='%238870FF'/%3E%3Cstop offset='1' stop-color='%23FEAECB'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23a)' d='M56 54c-7-12.5-26.2-13.2-35.5-22.5C14.4 25.2 14 16.4 16.7 11 19.5 5.3 25.9 1 33.1 1c2.7 0 8 1 11 3 14.1 9.4 18 22.7 19.6 28.5 1.6 5.8 1.5 14.5-7.7 21.5z'/%3E%3Cpath fill='url(%23a)' opacity='.85' d='M86.2 58C78.2 75.5 48.2 70.5 33.2 64 20.6 66.3 15.2 72 15.2 81c0 9.5 6.2 17.4 15.5 18.5 9.3 1.1 22.6-5.5 33-14 9-7.4 19.8-17.6 22.5-27.5z'/%3E%3C/svg%3E"
+  }
+}
