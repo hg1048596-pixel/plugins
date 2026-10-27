@@ -1,8 +1,22 @@
-# OrcaTerm
+# @magpie-community/opencode-orcaterm-auth
 
-Tencent Cloud OrcaTerm's (腾讯云遨驰终端) AI assistant as a provider for magpie and OpenCode: its
-built-in models — DeepSeek, Hunyuan, GLM, Kimi — answer through magpie's gateway, so any agent
-magpie serves can use them.
+Signs in to **Tencent Cloud OrcaTerm** (腾讯云遨驰终端) and serves its AI assistant's models —
+DeepSeek, Hunyuan, GLM and Kimi — in OpenCode and magpie. Provider id: `orcaterm`.
+
+> **Unofficial.** This package is not affiliated with, authorised or endorsed by Tencent; its
+> names and marks belong to their owners. It talks to the non-public APIs the OrcaTerm web
+> client uses and identifies itself the way that client does, which may not be allowed by
+> Tencent's terms, and those APIs may change at any time. Use it at your own risk, including
+> the risk of restrictions on your account — see [Before you use this](#before-you-use-this-the-terms).
+
+## Install
+
+```sh
+magpie plugin add @magpie-community/opencode-orcaterm-auth
+magpie plugin login orcaterm
+```
+
+or install it from magpie's Plugins tab and sign in there.
 
 ## Before you use this: the terms
 
@@ -64,7 +78,7 @@ that is the request being empty of tools, not proof the assistant can do nothing
 `hideToolMessage` is therefore left `false`, so that if anything does run, its trace stays in the
 reply where you can see it.
 
-## Signing in
+## Sign-in
 
 There is one method: paste the cookie pair.
 
@@ -120,7 +134,7 @@ the stream first (`peekAnswer`, as `packages/codearts` does) and answers with a 
 A refusal that arrives after the answer has started is delivered as a stream error rather than as
 text, so it still counts as a failure.
 
-## How a request travels
+## Requests
 
 magpie's gateway turns whatever protocol the agent speaks into a Chat Completions body and hands it
 to this plugin's `fetch`. That body becomes one assistant turn — a conversation id, a user id, the
@@ -136,6 +150,10 @@ Two consequences worth knowing:
   written into the conversation as text so nothing is lost, but the agent does the calling itself.
 - **No images.** `image_url` parts become a `[图片]` note.
 
+Token counts are not reported: the upstream returns none, and an estimate passed off as real usage
+would make both cost and context accounting wrong. A caller that asks for `include_usage` gets the
+answer without a usage block.
+
 ## Quota
 
 `auth.usage` reads `DescribeUserBillingStatus` and reports the `hunyuan_ai` row — the AI answer
@@ -145,7 +163,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 
 ## Tests
 
-```bash
+```sh
 bun test
 ```
 
@@ -161,3 +179,31 @@ bun test
 | `usage.test.mjs` | which `usageStats` row is the AI allowance |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
+
+## 中文
+
+在 OpenCode 和 magpie 里使用**腾讯云遨驰终端（OrcaTerm）** AI 助手的模型：DeepSeek、混元、
+GLM、Kimi。provider id：`orcaterm`。
+
+> **非官方插件**：与腾讯、腾讯云及 OrcaTerm（遨驰终端）没有任何关联，也未获其授权或认可。
+> 插件调用的是 OrcaTerm 网页端使用的非公开接口，并以与官方客户端相同的方式标识自己，
+> 这可能不符合腾讯云的服务条款，接口也可能随时变更。使用风险（包括账号受限）由使用者自行承担。
+
+- **登录**：粘贴 `uin` + `skey`。这两个是**腾讯云控制台的完整会话 cookie**，不是 OrcaTerm 专用
+  令牌 —— 拿到它们就能在腾讯云范围内以你的身份操作，包括你的服务器和账单。
+  **不要用持有生产资源的账号**，想试就用一个名下没有东西的独立账号。
+- **条款**：OrcaTerm 用户协议 2.3 保留所有未明示授权的权利，2.1 把服务限定为 OrcaTerm 本身；
+  内置 AI 额度是绑在产品上的资源权益，从未被授权为可外部调用的接口。相关条款还有 3.5.3、
+  3.5.5、3.5.7、6.5(4) 与腾讯云服务协议 5.7(3)，后果见 4.4.1、7.2 与 5.8（可限功能、封号、终止服务）。
+  一个细节：官方 OpenAPI 有会话与登录接口，**唯独没有任何 AI 问答接口**。
+- **模型**：`deepseek-chat-latest`、`hy3-preview`、`glm-4.7`、`glm-4.7-thinking`、`kimi-k2`、
+  `kimi-k2-thinking`、`hunyuan-turbos`、`hunyuan-t1`，也支持 `deepseek`/`kimi`/`glm`/`hunyuan` 简称。
+- **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。
+- **失败会如实报错**：上游把失败写在 SSE 里（`data: [ERROR]: …`），HTTP 状态仍是 200。
+  插件会先读流头，把配额用完/限流回成 429、登录失效回成 401 并标记账号，这样 magpie 才会换账号
+  或让账号歇着，而不是把失败当成一次正常回答。
+- **不做工具调用、不支持图片**：助手在服务端跑自己的工具，插件只做文本往返。
+
+## License
+
+MIT — see [LICENSE](../../LICENSE).

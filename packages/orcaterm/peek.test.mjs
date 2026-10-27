@@ -94,6 +94,19 @@ test("a long answer is not truncated by the peek", async () => {
   expect(text).toContain("w199 ")
 })
 
+// The OpenAI error body carries both a class and a code, and they are not
+// the same thing: `type` is the class magpie reasons about, `code` says what
+// the upstream said. Passing the class in both places loses the upstream's
+// own words, which is what a user needs to see.
+test("a refusal keeps the upstream's words in code, the class in type", async () => {
+  const res = await ask(bodyOf(["data: [ERROR]: 本月问答次数已用完\n\n"]))
+  expect(res.status).toBe(429)
+  const j = await res.json()
+  expect(j.error.type).toBe("rate_limit_error")
+  expect(j.error.code).toContain("次数已用完")
+  expect(j.error.code).not.toBe("rate_limit_error")
+})
+
 // classifyHead is what decides: a frame carrying text is an answer, an
 // [ERROR] frame is not, and a quiet stream that has ended is an answer.
 test("classifyHead tells answers from refusals", () => {
