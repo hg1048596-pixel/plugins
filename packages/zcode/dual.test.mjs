@@ -198,7 +198,7 @@ test("the card shows the Coding windows and the gift's buckets together", async 
   expect(u.plan).toBe("GLM Coding Pro")
   expect(u.signIn).toBe("kept")
   expect(u.error).toBeUndefined()
-  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Trust Build"])
+  expect(u.windows.map((w) => w.name)).toEqual(["5 hours", "Start Plan · Trust Build"])
   expect(u.windows[1]).toMatchObject({ used: 25, display: "250 / 1000", models: ["GLM-5.3-Flash-Trial"] })
   expect(u.until).toBeUndefined()
   expect(u.renew).toBeUndefined()

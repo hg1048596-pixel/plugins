@@ -1,0 +1,315 @@
+{
+ "off": [
+  {
+   "label": "plain",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "59e90e18037612eb444dbe2ba1b5f4fc1c50849589240970357f54c92a441048",
+     "conversation": "id0",
+     "turn": "id1"
+    }
+   ]
+  },
+  {
+   "label": "opencode tools",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "4313871b1ee3a9d4e0869676cc2ffc48a887316367b1f42a11566dd35296c6c6",
+     "conversation": "id2",
+     "turn": "id3"
+    }
+   ]
+  },
+  {
+   "label": "default effort",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "22b7f46b07d89c0679760d51f1fe53d547359574debe333354a73818e1037826",
+     "conversation": "id4",
+     "turn": "id5"
+    }
+   ]
+  },
+  {
+   "label": "developer, no system",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "6a1ce08aeb4e013e8287698e442754da229f5d0385d07ef6be2f575d58c77a7f",
+     "conversation": "id6",
+     "turn": "id7"
+    }
+   ]
+  },
+  {
+   "label": "after tools, refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "0d1ac7ee8e1a928d0df5493c9c931d6798a8677d38cb9ded11359f1e8b04a556",
+     "conversation": "id2",
+     "turn": "id3"
+    },
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "41ff2bb4e605ad82d6684e9806531c0546771f5d5c3d58ed5a639ae7aae14935",
+     "conversation": "id2",
+     "turn": "id3"
+    }
+   ]
+  },
+  {
+   "label": "after tools, known",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "4cca50eea274fe1d53883803cf1a21b5da19864e8e5b86c6921df800a0e8ee61",
+     "conversation": "id2",
+     "turn": "id8"
+    }
+   ]
+  },
+  {
+   "label": "system refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "98a7e94ac60d64c3adaf1e98e076437680e46008d364795871dcd8a6a30c7ab3",
+     "conversation": "id0",
+     "turn": "id1"
+    },
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "124f305a6897261515325c9d4d7c4b6e5a2e586e984ed252a93d24ed09242548",
+     "conversation": "id0",
+     "turn": "id1"
+    }
+   ]
+  },
+  {
+   "label": "system known refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "a0dc1ed8a18b73f19334ac0318692c8d16bc8998e3429b88e912228e7db0e52e",
+     "conversation": "id9",
+     "turn": "id10"
+    }
+   ]
+  },
+  {
+   "label": "both",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "d11353aaad5d4d10d08cb99fd2cfb1857e8e3f0c85f64e096caa0c2e8ce3e94c",
+     "conversation": "id11",
+     "turn": "id12"
+    },
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "6719aef9e98e84fd8cf019cc07853063cc2c67655c635ec94358c16dc92c6e09",
+     "conversation": "id11",
+     "turn": "id12"
+    }
+   ]
+  },
+  {
+   "label": "messages",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v1/messages",
+     "encoding": null,
+     "body": "189ca577bde99c23451117367dbcdd13d191124ed3d522e1908f3036b4164be0",
+     "conversation": "id13",
+     "turn": "id14"
+    }
+   ]
+  },
+  {
+   "label": "bytes",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "7303f704d6aab8b9e19ec838c85b75d2619c099bd11055d8fb316a6e33c699e6",
+     "conversation": "id15",
+     "turn": "id16"
+    }
+   ]
+  },
+  {
+   "label": "not json",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "92072df399cb74703f8e86f450d552bc0bb01eeeb98a90985a1b7772c8fd0016",
+     "conversation": null,
+     "turn": "id17"
+    }
+   ]
+  }
+ ],
+ "freeOnly": [
+  {
+   "label": "plain",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "59e90e18037612eb444dbe2ba1b5f4fc1c50849589240970357f54c92a441048",
+     "conversation": "id0",
+     "turn": "id1"
+    }
+   ]
+  },
+  {
+   "label": "opencode tools",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "4313871b1ee3a9d4e0869676cc2ffc48a887316367b1f42a11566dd35296c6c6",
+     "conversation": "id2",
+     "turn": "id3"
+    }
+   ]
+  },
+  {
+   "label": "default effort",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "22b7f46b07d89c0679760d51f1fe53d547359574debe333354a73818e1037826",
+     "conversation": "id4",
+     "turn": "id5"
+    }
+   ]
+  },
+  {
+   "label": "developer, no system",
+   "status": 404,
+   "sent": []
+  },
+  {
+   "label": "after tools, refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "41ff2bb4e605ad82d6684e9806531c0546771f5d5c3d58ed5a639ae7aae14935",
+     "conversation": "id2",
+     "turn": "id3"
+    }
+   ]
+  },
+  {
+   "label": "after tools, known",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "4cca50eea274fe1d53883803cf1a21b5da19864e8e5b86c6921df800a0e8ee61",
+     "conversation": "id2",
+     "turn": "id6"
+    }
+   ]
+  },
+  {
+   "label": "system refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "124f305a6897261515325c9d4d7c4b6e5a2e586e984ed252a93d24ed09242548",
+     "conversation": "id0",
+     "turn": "id1"
+    }
+   ]
+  },
+  {
+   "label": "system known refused",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "a0dc1ed8a18b73f19334ac0318692c8d16bc8998e3429b88e912228e7db0e52e",
+     "conversation": "id7",
+     "turn": "id8"
+    }
+   ]
+  },
+  {
+   "label": "both",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "6719aef9e98e84fd8cf019cc07853063cc2c67655c635ec94358c16dc92c6e09",
+     "conversation": "id9",
+     "turn": "id10"
+    }
+   ]
+  },
+  {
+   "label": "messages",
+   "status": 404,
+   "sent": []
+  },
+  {
+   "label": "bytes",
+   "status": 200,
+   "sent": [
+    {
+     "url": "https://www.workbuddy.ai/v2/chat/completions",
+     "encoding": "gzip",
+     "body": "7303f704d6aab8b9e19ec838c85b75d2619c099bd11055d8fb316a6e33c699e6",
+     "conversation": "id11",
+     "turn": "id12"
+    }
+   ]
+  },
+  {
+   "label": "not json",
+   "status": 404,
+   "sent": []
+  }
+ ]
+}

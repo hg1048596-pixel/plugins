@@ -52,8 +52,9 @@ test("an entry's levels are offered as the variants agents pick, named as OpenCo
 
 // Trae's client names five levels (its bundle's
 // reasoning_effort.{low,medium,high,extra_high,max}), handed out per model.
-// Its app offers DeepSeek V4.1 Flash max (#434, huajii); a list naming max
-// beside light/high/extra_high lost it, so no agent could pick it.
+// A list naming max beside light/high/extra_high lost it, so no agent could
+// pick it. (#434's "max" turned out to be the app's 1M-window Max switch,
+// deepseek-v4.1-flash-max; its levels are light/high/extra_high alone.)
 test("max and medium an entry names are offered and sent as Trae names them (#434)", async () => {
   expect(levelsOf({ reasoning_effort_config: { options: ["light", "high", "extra_high", "max"] } })).toEqual(["low", "high", "xhigh", "max"])
   expect(levelsOf({ reasoning_effort_config: { options: ["light", "medium", "high"] } })).toEqual(["low", "medium", "high"])

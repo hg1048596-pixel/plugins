@@ -58,6 +58,9 @@ const notHere = (revoked=false) => Object.assign(Error(revoked
   : '这个 Kimi Work 账号已不是 Kimi 桌面版当前登录的账号，本机也没有它的 Work 密钥。请在 Kimi 桌面版切换到这个账号进入一次 Work，之后切回别的账号它也能继续用。'),
   {signIn:'expired',code:'kimi_work_account_not_here'});
 const unavailable = error => Object.assign(Error('Kimi Work 连接失败：' + (error?.cause?.code || error?.message || '未知网络错误'), {cause:error}), {code:'kimi_work_connection_failed'});
+// spentQuota is a 403 body saying the account's allowance is used up, not
+// that the token or the model is refused (#465).
+const spentQuota = text => /resource_exhausted|usage limit|billing cycle|insufficient balance|quota/i.test(String(text??''));
 const percent = x => typeof x === 'number' && Number.isFinite(x) ? Math.max(0,Math.min(100,x*100)) : undefined;
 
 // Kimi Work validates tools against Moonshot's "moonshot flavored json
@@ -498,6 +501,18 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           try { response=await fetchImpl(BASE+'/chat/completions',{...options,method:'POST',headers,redirect:'error'}); }
           catch(error) { if(options.signal?.aborted)throw error; throw unavailable(error); }
           if(response.status===401) { await response.body?.cancel(); throw s.away?notHere(true):expired(); }
+          // Kimi says a spent allowance with a 403 ("You've reached your
+          // usage limit for this billing cycle", resource_exhausted
+          // "insufficient balance"), which magpie reads as a key fault and
+          // keeps sending to the spent account (#465). Like Devin's and
+          // Qoder's, a spent quota goes out as a 429, so magpie rests that
+          // account and asks the next; Kimi's body and headers are kept.
+          if(response.status===403) {
+            const text=await response.text(),spent=spentQuota(text),h=new Headers(response.headers);
+            // The text is already decoded: its old length and encoding no longer hold.
+            h.delete('content-encoding');h.delete('content-length');
+            return new Response(text,{status:spent?429:403,statusText:spent?'Too Many Requests':response.statusText,headers:h});
+          }
           // Magpie classifies rate vs quota from the upstream response. Keep
           // its wording, reset details and Retry-After instead of guessing.
           return response;
@@ -549,4 +564,4 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
 }
 
 export default async function KimiWorkProvider(){return createPlugin();}
-export const _internal={createPlugin,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,readDeviceId};
+export const _internal={createPlugin,spentQuota,moonshotTools,moonshotSchema,readDesktop,readKeys,desktopFile,shareDir,userDataDir,modelRows,workConfigRows,BASE,MEMBER,CONFIG,UA,workHeaders,webHeaders,readDeviceId};

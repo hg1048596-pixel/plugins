@@ -113,3 +113,31 @@ test("reads the console docs' endpoint table, and Jev stays out as SystemOne", a
   const models = buildModels(["jev-1.13-free", "step-5-preview-free"], {}, protocols, baseURL);
   assert.deepEqual(Object.keys(models), ["step-5-preview-free"]);
 });
+
+// The catalog's 200000 for deepseek-v4.1-flash-free is low. The model's
+// upstream usage on 2026-10-26 was in 576 + cache_read 258,048 = 258,624
+// tokens, and the request got a 200; 258,624 is therefore the measured
+// floor ("258K"), not an exact ceiling. A larger catalog value (a corrected
+// 262,144 or 1,000,000) must pass through untouched, and a missing one
+// falls back to the floor.
+test("deepseek-v4.1-flash-free keeps its measured 258K floor over a low 200K catalog", async () => {
+  const { buildModels } = await subject;
+  const model = (context) => ({
+    name: "DeepSeek V4.1 Flash Free",
+    cost: { input: 0, output: 0 },
+    limit: { ...(context == null ? {} : { context }), output: 32000 },
+    reasoning: true,
+    tool_call: true,
+  });
+  const built = (context) => buildModels(
+    ["deepseek-v4.1-flash-free"],
+    { npm: "@ai-sdk/openai-compatible", models: { "deepseek-v4.1-flash-free": model(context) } },
+    {},
+    baseURL,
+  )["deepseek-v4.1-flash-free"];
+  assert.equal(built(200000).limit.context, 258624);
+  assert.equal(built(undefined).limit.context, 258624);
+  assert.equal(built(262144).limit.context, 262144);
+  assert.equal(built(1000000).limit.context, 1000000);
+  assert.equal(built(200000).limit.output, 32000);
+});

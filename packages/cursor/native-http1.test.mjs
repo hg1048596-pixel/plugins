@@ -48,8 +48,9 @@ async function fixture({ failResult = false, stallKv = false } = {}) {
   await new Promise((r) => server.listen(0, "127.0.0.1", r))
   servers.push({ server, sessions })
   const base = `http://127.0.0.1:${server.address().port}`
-  const seen = { sse: 0, runs: 0, appends: [], results: [], closes: [], kv: [], histories: [], maxInFlight: 0, conversationId: "", dashboardRequests: 0 }
+  const seen = { sse: 0, runs: 0, appends: [], results: [], closes: [], kv: [], histories: [], maxInFlight: 0, alone: 0, conversationId: "", dashboardRequests: 0 }
   let inFlight = 0
+  let othersIn = 0
   let controller
   let ended = false
   let requestID
@@ -89,6 +90,11 @@ async function fixture({ failResult = false, stallKv = false } = {}) {
     expect(string(nest(body, 2), 1)).toBe(requestID)
     const seqno = number(body, 3)
     const wire = Buffer.from(string(body, 1), "hex")
+    // Only KV replies may overlap: anything else goes alone, and nothing
+    // goes beside it (seen.alone counts the breaches).
+    const kvMsg = readWire(wire).some((f) => f.no === 3)
+    if (kvMsg ? othersIn > 0 : inFlight > 0) seen.alone++
+    if (!kvMsg) othersIn++
     inFlight++
     seen.maxInFlight = Math.max(seen.maxInFlight, inFlight)
     seen.appends.push(seqno)
@@ -157,6 +163,7 @@ async function fixture({ failResult = false, stallKv = false } = {}) {
       return new Response(new Uint8Array(0))
     } finally {
       inFlight--
+      if (!kvMsg) othersIn--
     }
   }
   const account = {
@@ -196,11 +203,14 @@ test("native HTTP/1: two external roundtrips keep one RunSSE and serialize resul
   expect(final.body.choices[0].finish_reason).toBe("stop")
   expect(final.body.usage.prompt_tokens).toBe(17)
   expect(final.body.usage.completion_tokens).toBe(5)
-  expect(seen).toMatchObject({ sse: 1, runs: 1, appends: [0, 1, 2, 3, 4], closes: [7, 8], maxInFlight: 1 })
+  expect(seen).toMatchObject({ sse: 1, runs: 1, appends: [0, 1, 2, 3, 4], closes: [7, 8], maxInFlight: 1, alone: 0 })
   expect(seen.results.map((r) => r.id)).toEqual([7, 8])
 })
 
-for (const bound of ["bytes", "messages"]) test(`native loader HTTP/1: parked KV replies stalled past writeWait at the outbound ${bound} bound abort all transport work`, async () => {
+// KV replies (a Run's history, which Cursor asks for at once) go up
+// H1.atOnce at a time, so 16 stalled appends are on their way before the
+// outbound queue fills behind them.
+for (const bound of ["bytes", "messages"]) test(`native loader HTTP/1: KV replies go ${_internal.H1.atOnce} at once; stalled past writeWait at the outbound ${bound} bound they abort all transport work`, async () => {
   NATIVE_LIMITS.outboundBytes = 4 << 20
   NATIVE_LIMITS.writeWait = 100
   NATIVE_LIMITS.outboundMessages = bound === "messages" ? 4 : 256
@@ -214,7 +224,7 @@ for (const bound of ["bytes", "messages"]) test(`native loader HTTP/1: parked KV
   await until(() => a.seen.kv.includes(90) && a.inFlight() === 0)
   a.push(getBlob(91, blobID))
   await until(() => a.seen.kv.includes(91))
-  for (let i = 0; i < 8; i++) a.push(getBlob(92 + i, blobID))
+  for (let i = 0; i < _internal.H1.atOnce + 8; i++) a.push(getBlob(92 + i, blobID))
   await until(() => !!owner.error)
   expect(owner.error).toMatchObject({ status: 503 })
   expect(owner.error.message).toContain("outbound")
@@ -222,8 +232,9 @@ for (const bound of ["bytes", "messages"]) test(`native loader HTTP/1: parked KV
   await until(() => a.inFlight() === 0 && a.ended())
   expect(owner.transport.outbound).toEqual({ bytes: 0, messages: 0 })
   expect(owner.ac.signal.aborted).toBe(true)
-  expect(a.seen.kv).toEqual([90, 91])
-  expect(a.seen.maxInFlight).toBe(1)
+  expect(a.seen.kv).toEqual(Array.from({ length: _internal.H1.atOnce + 1 }, (_, i) => 90 + i))
+  expect(a.seen.maxInFlight).toBe(_internal.H1.atOnce)
+  expect(a.seen.alone).toBe(0)
   expect(a.seen.results).toEqual([])
   expect(a.seen.closes).toEqual([])
   // Retention overflow ends this owner. A later request is history input to
@@ -257,5 +268,5 @@ for (const stream of [false, true]) test(`native HTTP/1: ${stream ? "streamed" :
   expect(seen.sse).toBe(2)
   expect(seen.results).toHaveLength(1)
   expect(seen.closes).toEqual([])
-  expect(seen.maxInFlight).toBe(1)
+  expect(seen.alone).toBe(0)
 })

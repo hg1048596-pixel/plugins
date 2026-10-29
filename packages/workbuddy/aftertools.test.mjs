@@ -3,6 +3,7 @@
 // message" (#113). The body is the one www.workbuddy.ai sent on 2026-10-14.
 import { expect, test } from "bun:test"
 import { WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
+import { unz } from "./testdata/unz.mjs"
 
 const { replyAfterTools } = _internal
 
@@ -25,7 +26,7 @@ async function withService(fn) {
   const realFetch = globalThis.fetch
   const sent = []
   globalThis.fetch = async (_url, init) => {
-    const b = JSON.parse(init.body)
+    const b = JSON.parse(unz(init.body))
     sent.push(b)
     const m = b.messages
     let i = m.length - 1

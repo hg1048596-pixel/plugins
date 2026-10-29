@@ -262,6 +262,58 @@ test("openH1 one at a time (a native session's Run): write callbacks and drain w
   expect(callbacks).toEqual([0, 1])
 })
 
+// A native session's Run over HTTP/1.1 (runNative): its history's KV replies
+// go up together, as cursor-agent sends them; anything else (a tool result,
+// an exec close) waits for every append before it, goes alone, and its
+// write's callback is its own append answered.
+test("openH1 with kvReply: KV replies overlap; any other message waits for them, goes alone, and is answered before its callback", async () => {
+  const downstream = body()
+  const held = new Map()
+  const seqnos = []
+  const callbacks = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/RunSSE")) return new Response(downstream.stream)
+    const seq = fields(Buffer.from(init.body)).find((f) => f.num === 3)?.n ?? 0
+    seqnos.push(seq)
+    const b = body()
+    held.set(seq, b)
+    return new Response(b.stream)
+  }
+  const o = keep(await openH1(headers, undefined, H1.atOnce, _internal.kvReply))
+  const kv = (i) => frame(pb().bytes(3, pb().varint(1, i).bytes(2, pb().bytes(1, Buffer.from("blob " + i)))).done())
+  const result = frame(pb().bytes(2, pb().varint(1, 7)).done())
+  for (let i = 0; i < 3; i++) o.req.write(kv(i), () => callbacks.push("kv" + i))
+  o.req.write(result, () => callbacks.push("result"))
+  o.req.write(kv(3), () => callbacks.push("kv3"))
+  await until(() => seqnos.length === 3 && callbacks.length === 3)
+  // three KV replies on their way at once, their callbacks already called
+  expect(seqnos).toEqual([0, 1, 2])
+  expect(callbacks).toEqual(["kv0", "kv1", "kv2"])
+  held.get(0).controller.close()
+  held.get(2).controller.close()
+  await new Promise((r) => setTimeout(r, 20))
+  expect(seqnos).toEqual([0, 1, 2]) // the result waits for append 1 too
+  held.get(1).controller.close()
+  await until(() => seqnos.length === 4)
+  await new Promise((r) => setTimeout(r, 20))
+  expect(seqnos).toEqual([0, 1, 2, 3]) // alone: nothing goes beside it
+  expect(callbacks).toEqual(["kv0", "kv1", "kv2"]) // nor is it written before it is answered
+  held.get(3).controller.close()
+  await until(() => callbacks.length === 5)
+  expect(seqnos).toEqual([0, 1, 2, 3, 4])
+  expect(callbacks).toEqual(["kv0", "kv1", "kv2", "result", "kv3"])
+  held.get(4).controller.close()
+})
+
+test("kvReply is a kv_client_message and nothing else", () => {
+  expect(_internal.kvReply(pb().bytes(3, pb().varint(1, 1)).done())).toBe(true)
+  expect(_internal.kvReply(pb().bytes(2, pb().varint(1, 1)).done())).toBe(false) // exec result
+  expect(_internal.kvReply(pb().bytes(5, pb().varint(1, 1)).done())).toBe(false) // exec control
+  expect(_internal.kvReply(pb().bytes(7, Buffer.alloc(0)).done())).toBe(false) // heartbeat
+  expect(_internal.kvReply(pb().bytes(1, pb().varint(1, 1)).done())).toBe(false) // run request
+  expect(_internal.kvReply(Buffer.alloc(0))).toBe(false)
+})
+
 // The same plugin ownership assertions cover retained Runs and capacity fallback.
 for (const retained of [0, 32]) for (const outcome of ["head abort", "completion", "HTTP error"]) {
   test(`the plugin (${retained ? "retained" : "stateless fallback"}): ${outcome} releases transport ownership and its Run abort listener`, async () => {

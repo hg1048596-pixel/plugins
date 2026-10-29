@@ -166,7 +166,19 @@ and end. The card's plan and term stay the coding plan's. A gift read
 that fails leaves just the coding card — magpie hides a card's windows
 behind an error, so a gift hiccup must not black out a working Coding
 Plan. A gift that goes out of date while requests use it simply stops
-showing.
+showing. Beside the coding plan's windows each gift bucket is named
+after its plan ("Start Plan · GLM-5.1-Trial"), one plan or several, so
+the two allowances can't be read as one.
+
+**Gift plans that start later.** A plan on the balance whose `starts_at`
+is still to come (a Start Plan taking effect at 23:00 today) serves
+nothing yet: no request goes to it and its buckets don't count. The card
+names it in a line set aside, "ZCode gift plan not started yet", with
+the plan's name and its start in this computer's time as the display
+("Start Plan · 2026-10-29 23:00"), soonest first. An account whose only
+gift plan starts later gets a card with that line, not "ended or never
+started". The status ZCode gives such a plan has not been seen, so any
+status but `expired` is taken; `starts_at` decides it.
 
 **Resets.** A GLM Coding Plan of the account's own, and a team seat,
 show the resets the vendor's usage page lists

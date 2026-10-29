@@ -5,6 +5,7 @@
 // reaches the network.
 import { afterEach, expect, test } from "bun:test"
 import { WorkBuddyAuthPlugin, WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
+import { unz } from "./testdata/unz.mjs"
 
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
@@ -35,7 +36,7 @@ function serve(config = () => Response.json(CONFIG)) {
   const sent = []
   globalThis.fetch = async (url, init) => {
     const u = String(url)
-    sent.push({ url: u, body: init?.body })
+    sent.push({ url: u, body: unz(init?.body) })
     if (u.endsWith("/v3/config")) return config()
     return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
   }
@@ -119,11 +120,13 @@ for (const [plugin, site, url] of [
     expect(sent.filter((s) => s.url === url)).toHaveLength(0)
   })
 
-  test(`${site}: off, a paid model's request goes as before, the list not read`, async () => {
+  test(`${site}: off, a paid model's request goes as before, the list not read for its price`, async () => {
     const sent = serve()
     const h = await plugin({ client: {}, magpie: magpieWith({}) })
     const opts = await h.auth.loader(async () => ({ type: "api", key: KEY }))
-    expect((await chat(opts, url, "glm-5.3")).status).toBe(200)
+    // the effort named: nothing to read the list for (withDefaultEffort)
+    const res = await opts.fetch(url, { method: "POST", body: JSON.stringify({ model: "glm-5.3", reasoning_effort: "low", stream: true, messages: [{ role: "user", content: "hi" }] }) })
+    expect(res.status).toBe(200)
     expect(sent.map((s) => s.url)).toEqual([url])
   })
 }

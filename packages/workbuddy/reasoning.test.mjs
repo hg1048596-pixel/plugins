@@ -4,6 +4,7 @@
 // the one Grok Build 1.0.67 sends after a tool call.
 import { expect, test } from "bun:test"
 import { WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
+import { unz } from "./testdata/unz.mjs"
 
 const { asReasoning } = _internal
 
@@ -20,7 +21,7 @@ async function upstream(messages) {
   const realFetch = globalThis.fetch
   const sent = []
   globalThis.fetch = async (url, init) => {
-    if (String(url).includes("/chat/completions")) sent.push(JSON.parse(init.body))
+    if (String(url).includes("/chat/completions")) sent.push(JSON.parse(unz(init.body)))
     return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
   }
   try {

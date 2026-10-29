@@ -13,6 +13,10 @@ afterEach(() => (globalThis.fetch = real))
 const KEY = "ck_test0000000000abcdefgh"
 const OK = () => new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
 
+// chatsOf are the requests sent but the product config, which a chat with
+// no effort of its own may read first for its default (withDefaultEffort)
+const chatsOf = (sent) => sent.filter((s) => !s.url.endsWith("/v3/config"))
+
 // record answers each fetch with reply and keeps the URL and headers sent
 function record(reply = OK) {
   const sent = []
@@ -57,9 +61,9 @@ for (const [plugin, site, url] of [
     expect(typeof opts.fetch).toBe("function")
     const res = await chat(opts, url)
     expect(res.status).toBe(200)
-    expect(sent).toHaveLength(1)
-    const h = sent[0].headers
-    expect(sent[0].url).toBe(url)
+    expect(chatsOf(sent)).toHaveLength(1)
+    const h = chatsOf(sent)[0].headers
+    expect(chatsOf(sent)[0].url).toBe(url)
     expect(h.get("x-api-key")).toBe(KEY)
     expect(h.get("authorization")).toBe("Bearer " + KEY)
     expect(h.get("x-user-id")).toBe("anonymous_abcdefgh")
@@ -74,8 +78,8 @@ for (const [plugin, site, url] of [
     const hooks = await plugin({ client: {} })
     const opts = await hooks.auth.loader(async () => ({ type: "oauth", access: "tok", refresh: "r", uid: "u1", expires: Date.now() + 3600_000 }))
     await chat(opts, url)
-    const h = sent[0].headers
-    expect(sent[0].url).toBe(url)
+    const h = chatsOf(sent)[0].headers
+    expect(chatsOf(sent)[0].url).toBe(url)
     expect(h.get("authorization")).toBe("Bearer tok")
     expect(h.has("x-api-key")).toBe(false)
     expect(h.get("x-user-id")).toBe("u1")
@@ -88,7 +92,7 @@ for (const [plugin, site, url] of [
     const opts = await hooks.auth.loader(async () => ({ type: "api", key: KEY }))
     const res = await chat(opts, url)
     expect(res.status).toBe(401)
-    expect(sent).toHaveLength(1) // no refresh asked, no second send
+    expect(chatsOf(sent)).toHaveLength(1) // no refresh asked, no second send
     expect(res.headers.get("X-Magpie-Sign-In")).toBe("expired")
     const { error } = await res.json()
     expect(error.message).toContain("refused this API key (401)")

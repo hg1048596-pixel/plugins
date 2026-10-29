@@ -2,6 +2,7 @@
 // request shape than pi-ai's default Chat Completions payload.
 import { expect, test } from "bun:test"
 import { WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
+import { unz } from "./testdata/unz.mjs"
 
 const { withSystem, normalizeToolChoice, fitted } = _internal
 
@@ -58,7 +59,7 @@ test("loader sends the normalized body to WorkBuddy", async () => {
   const realFetch = globalThis.fetch
   let sent
   globalThis.fetch = async (_url, init) => {
-    sent = JSON.parse(init.body)
+    sent = JSON.parse(unz(init.body))
     return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
   }
   try {

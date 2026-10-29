@@ -51,8 +51,10 @@ plugin's `fetch` answers them on Cursor's agent API:
   (refused, no network) or a stream the server refused leaves the next Run
   to try HTTP/2 again. A region error over HTTP/1.1 sends the Run back to
   HTTP/2 at the region's agent host. BidiAppends go up numbered in order,
-  up to 16 at a time as cursor-agent sends them (one at a time for a
-  native session's Run, whose tool results must be certain). A BidiAppend
+  up to 16 at a time as cursor-agent sends them. A native session's Run
+  sends only its KV replies (the history's blobs) that way; a tool result
+  or anything else waits for the appends before it, goes alone, and is
+  written once Cursor answered it, so it is never uncertain. A BidiAppend
   with no answer in 60 s (more for a large one) ends the Run, as
   cursor-agent does.
 - A new Run imports the whole conversation as AI SDK messages kept as blobs
@@ -238,6 +240,11 @@ go without the list for 5 minutes instead of each waiting for it again.
 ## Usage
 
 magpie shows Cursor Models, Other Models and Total for the billing period.
+A plan of Cursor's merged billing (`GetPlanInfo`'s `isMerged`, the newer
+plans) has no Other Models pool: its included usage is one allowance every
+model draws on, as the dashboard's "Weekly usage limit" shows it. magpie
+shows that as one window, Weekly (Monthly on a monthly plan), for every
+model.
 Accounts with a Grok Bot allowance also show its usage and reset time;
 active trials are labelled separately. A spent Bot allowance doesn't stop
 Cursor requests.
@@ -251,6 +258,32 @@ on-demand spend reaches its limit. A team member with no limit of their
 own spends the team's pool: On-demand shows the pool's spend and limit,
 with the member's own spend beside it, and the account is used up when
 the pool is.
+
+An Enterprise account's period has no Cursor Models, Other Models or Total
+in `GetCurrentPeriodUsage`: Cursor reports its overall allowance through
+the website's `usage-summary` instead. Magpie shows that as Enterprise,
+for example `49.45 / 800 USD · 6.2% used`, or
+`750.55 / 800 USD · 93.8% left` with Magpie's Used / Left choice, reset at
+the billing cycle's end. When the summary says team on-demand is enabled
+and unlimited or still has room, the Enterprise window is informational:
+reaching its included allowance doesn't count the account as used up.
+On-demand also shows the team's spend when known, with its limit when it
+has one. A reached on-demand limit counts the account as used up.
+
+### Included usage only (optional)
+
+In magpie, open the Cursor provider, turn on **Included usage only** under
+**Plugin options**, and save (or set `"pluginOptions": {"cursor":
+{"included_only": true}}` in magpie's settings.json). It is off by default,
+applies to every Cursor account, and takes effect at each account's next
+usage reading.
+
+When on, Cursor Models and Other Models (a merged plan's Weekly, an
+Enterprise account's allowance) are what keep an account in routing: once one is used up, magpie moves its
+models to the next account until the period resets, even when on-demand
+could still pay for them. On-demand and Total are still shown but never
+keep an account in routing. Use it when on-demand is a shared or paid pool
+you don't want spent. When off, on-demand works as described above.
 
 Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
 subscription grants Bot access without a paid Cursor plan; see

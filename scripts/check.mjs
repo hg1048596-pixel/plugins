@@ -15,15 +15,23 @@ for (const name of readdirSync(root)) {
   const pj = join(dir, "package.json")
   if (!existsSync(pj)) continue
   const pkg = JSON.parse(readFileSync(pj, "utf8"))
-  // gateway middleware and routings, agents and pages have no OpenCode
-  // plugin; their own tests check them
-  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.agent) continue
+  // gateway middleware and routings, agents, pages and asynchronous hooks
+  // (magpie.hooks, Bun's own import) have no OpenCode plugin; their own
+  // tests check them
+  if (pkg.magpie?.middleware || pkg.magpie?.gateway || pkg.magpie?.agent || pkg.magpie?.hooks) continue
   if (pkg.magpie?.page && !pkg.main && !pkg.exports) continue
   const problems = []
   try {
     const mod = await import(pathToFileURL(join(dir, pkg.main ?? "index.mjs")).href)
+    // as magpie's host takes them: every exported function, and the
+    // OpenCode v1 form, a default export of { id, server }
     const fns = Object.values(mod).filter((v) => typeof v === "function")
-    if (!fns.length) problems.push("exports no plugin function")
+    const v1 = typeof mod.default?.server === "function" ? mod.default.server : null
+    if (!fns.length && !v1) problems.push("exports no plugin function")
+    // a page's v1 server is its host part, a local service the page
+    // navigates to: no provider, no tools. It isn't started here (it would
+    // take a port and write config); the package's own tests start it.
+    if (v1 && !pkg.magpie?.page) fns.push(v1)
     const client = { app: { log: async () => {} }, auth: { set: async () => {} }, tui: { showToast: async () => {} }, config: { get: async () => ({ data: {} }) } }
     for (const fn of fns) {
       const hooks = await fn({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })

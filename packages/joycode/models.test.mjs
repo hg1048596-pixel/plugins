@@ -5,6 +5,8 @@ import plugin from './index.mjs'
 const catalogue = [
   { chatApiModel: 'JoyAI-Code-1.6', label: 'JoyAI-Code-1.6', maxTotalTokens: 200000, respMaxTokens: 64000, features: ['function_call'] },
   { chatApiModel: 'GLM-5.3-agent', label: 'GLM-5.3', maxTotalTokens: 200000, respMaxTokens: 64000, features: ['function_call'] },
+  { chatApiModel: 'GPT-5.6 Sol', label: 'GPT-5.6 Sol', extJson: { adapterType: 'openai-response' } },
+  { chatApiModel: 'Claude-Opus-5-hq', label: 'Claude-Opus-5', extJson: { adapterType: 'anthropic' } },
 ]
 const billingRate = { excludeTenants: ['JD'], billingRates: [
   { chatApiModel: 'JoyAI-Code-1.6', billingRate: '0x' },
@@ -35,11 +37,18 @@ async function load(t, { tenant = 'personal', failRates = false, failList = fals
 
 test('sync current model multipliers including zero without adding pricing-only models', async t => {
   const { models } = await load(t)
-  assert.deepEqual(Object.keys(models), ['JoyAI-Code-1.6', 'GLM-5.3-agent'])
+  assert.deepEqual(Object.keys(models), ['JoyAI-Code-1.6', 'GLM-5.3-agent', 'GPT-5.6 Sol', 'Claude-Opus-5-hq'])
   assert.equal(models['JoyAI-Code-1.6'].rate, 0)
   assert.equal(models['JoyAI-Code-1.6'].free, true)
   assert.equal(models['GLM-5.3-agent'].rate, 0.6)
   assert.equal(models['GLM-5.3-agent'].capabilities.input.image, false)
+})
+test('model adapter chooses the SDK that speaks its upstream protocol', async t => {
+  const { models } = await load(t)
+  assert.equal(models['JoyAI-Code-1.6'].api.npm, '@ai-sdk/openai-compatible')
+  assert.equal(models['GPT-5.6 Sol'].api.npm, '@ai-sdk/openai')
+  assert.equal(models['Claude-Opus-5-hq'].api.npm, '@ai-sdk/anthropic')
+  for (const model of Object.values(models)) assert.equal(model.api.url, 'https://api-ai.jd.com/v1')
 })
 test('excluded tenants do not inherit public pricing', async t => {
   const { models } = await load(t, { tenant: 'JD' })
@@ -52,7 +61,7 @@ test('model-specific billing rate takes priority', async t => {
 })
 test('pricing fetch failure retains models without invented rates', async t => {
   const { models } = await load(t, { failRates: true })
-  assert.equal(Object.keys(models).length, 2)
+  assert.equal(Object.keys(models).length, 4)
   assert.equal(models['GLM-5.3-agent'].rate, undefined)
 })
 test('catalogue fetch failure returns original fallback model list', async t => {

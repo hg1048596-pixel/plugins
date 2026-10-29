@@ -261,7 +261,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-87 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+88 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |
@@ -315,5 +315,4 @@ GLM、Kimi。provider id：`orcaterm`。
 
 ## License
 
-MIT. The licence text is at the repository root, `LICENSE` — it is not part of the published
-package, so this README does not link to it from there.
+MIT. See this package's [LICENSE](./LICENSE), included in the published package.

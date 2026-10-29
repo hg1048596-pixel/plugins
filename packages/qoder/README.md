@@ -68,6 +68,21 @@ Refreshing:
 - Only one refresh runs at a time. A request that reads the sign-in before
   magpie saved a renewal uses the renewed pair, and a renewal handed a pair
   a request already spent gives what that request got.
+- A job token's end is what Qoder says: `expire_time` or `expires_at` (a
+  date, or an epoch in seconds or milliseconds), then `expires_in`
+  (milliseconds), then a day.
+- A chat Qoder answers 401 or 403 with no other code ("Login expired") is
+  sent again once: with the pair saved since, when another request, magpie
+  or another process renewed it meanwhile, else after one refresh, under the
+  same lock. A token renewed less than 5 minutes ago and refused again isn't
+  renewed again; the refusal is the answer.
+- A model Qoder serves that the account's listing has off or leaves out is
+  asked for the same way: the job token is renewed once (or the pair saved
+  since is used) and the list read again, before the request is answered
+  `unknown or disabled model`. On a job token Qoder no longer honours in
+  full, the listing can have only the free models on (#484). The same
+  5-minute rule holds, and an id Qoder has never served is said unknown at
+  once, with no renewal.
 - The device token, which reads usage, has no end on record: it is rotated
   when Qoder refuses it. On a [Qoder CN](#qoder-cn) device-token account it
   is the chat token too, and is renewed as above.
@@ -208,6 +223,14 @@ app's Fast from 2026-10-12:
 
 Every model speaks chat completions (`@ai-sdk/openai-compatible`).
 
+Every model a site ships also says, either way, whether it takes images:
+`attachment` and `modalities.input` are set on every `config` entry, image
+or no image. A kind left out is not "text only" to magpie but "the vendor
+didn't say", and magpie then falls back to models.dev's vote by bare model
+ID — where a same-named model of another vendor may take images, so this
+one gets sent them. QwenWork's three models and Qoder CN's Lite shipped no
+image key; since 0.2.47 they say text alone.
+
 ## Qoder CN
 
 `qoder-cn` is for accounts on [qoder.cn](https://qoder.cn), the China site.
@@ -278,6 +301,25 @@ paths, client id and protocol are the public ones:
 
 The hosts and reply shapes come from a real VPC account's report
 (yetone/magpie#312). This plugin has not been tried with a VPC account.
+
+## The card's name
+
+An account signed in with a phone is shown by that phone — masked, `138****8000` — not by
+its `accountId`, which is a uuid. Qoder CN's user info answers the number as `security_mobile`
+(measured `13800138000`), so that is what the card takes.
+
+QwenWork's phone accounts answer only the last four digits, as `name`, beside a synthetic
+`phone_<uuid>@phone.local` email (measured): the card shows `****8000` and never that email.
+An email sign-in keeps its email.
+
+`accountId` stays the account's identity — what magpie keys the user's own name for
+it, its proxy, model picks, caps and a gateway key's account list by — so it never
+changes: it is what a sign-in and every renewal give back. The card's name is usage's
+`user`, a field magpie shows and never keys by.
+
+A sign-in reads the user info, and a renewal reads it again (outside the token lock),
+so an account stored by an earlier version shows the phone on the card at its next
+renewal. A failed read changes nothing and never costs a sign-in.
 
 ## QwenWork (千问办公)
 
@@ -471,6 +513,19 @@ proof that credits arrived.
 the plugin factory and its pieces, for another service on this same
 protocol (QwenWork ships here; a future one can too). Its shape is not a
 stable API — it changes as the packages on it need.
+
+## Free models when the credits run out
+
+Qoder serves its free models after the credits are used up: "When Credits
+run out, you can continue using free basic models, subject to daily and
+monthly limits" ([docs.qoder.com/Credits](https://docs.qoder.com/Credits);
+the zh page says the same). So the credit windows the usage hook gives
+(Qoder and Qoder CN, since 0.2.46) name the account's free models in
+`notModels`: a model listed at 0× (not a discount's 0 for a while), from the
+account's own model list. magpie then doesn't count those models as spent
+on a used-up account, or on a free account's "0 credits left". A list that
+can't be read leaves every model counted. QwenWork reads its usage
+elsewhere and is not changed.
 
 ## Not here
 

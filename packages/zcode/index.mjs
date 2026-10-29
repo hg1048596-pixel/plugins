@@ -182,7 +182,7 @@ async function startPlan(jwt, device) {
   for (const p of plans) {
     const st = String(p?.status ?? "").trim().toLowerCase()
     const end = num(p?.ends_at)
-    if (st !== "active" || (end > 0 && end <= now)) continue
+    if (st !== "active" || (end > 0 && end <= now) || notStarted(p, now)) continue
     any = true
     if (end > 0) ttl = Math.min(ttl, (end - now) * 1000)
     if (!name) name = String(p?.name ?? "").trim()
@@ -520,6 +520,28 @@ function startNum(v) {
   return undefined
 }
 
+// notStarted is a plan whose starts_at is still to come (a Start Plan
+// that takes effect at 23:00 today, windy on Discord): it serves nothing
+// yet, so no request is routed to it and its buckets don't count, but the
+// card names it with its start. ZCode's balance gives every plan a
+// starts_at in Unix seconds; which status a plan not started yet carries
+// is not known, so any but "expired" is taken.
+function notStarted(p, now) {
+  const at = startNum(p?.starts_at)
+  return at > now && String(p?.status ?? "").trim().toLowerCase() !== "expired"
+}
+
+// PENDING is the card's line for a gift plan that has not started yet: a
+// fixed sentence, so magpie translates it; the plan's name and its start,
+// in this computer's time, are the display. Set aside: it stops nothing.
+const PENDING = "ZCode gift plan not started yet"
+const two = (n) => String(n).padStart(2, "0")
+const localTime = (sec) => {
+  const d = new Date(Math.trunc(sec) * 1000)
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`
+}
+const pendingLines = (g) => (g?.pending ?? []).map((p) => ({ name: PENDING, used: 0, aside: true, display: `${p.name} · ${localTime(p.start)}` }))
+
 // giftOf reads the balance and returns the gift's card fields: its plans and
 // windows. Several plans can be active at once, so every live plan's buckets
 // show, each keeping its own models and end; the plan and end put on the
@@ -551,21 +573,28 @@ async function giftOf(s) {
       return keep
     })
 
+  // a plan not started yet is named with its start, soonest first; its
+  // buckets, if the balance lists any, wait for it
+  const pending = plans.filter((p) => notStarted(p, now))
+    .map((p) => ({ name: first(str(p.name), "Start Plan"), start: startNum(p.starts_at) }))
+    .sort((a, b) => a.start - b.start)
+
   // every live plan counts as the gift: no plan-name filter decides it,
   // the balance says what the session can spend
   let active = null
   for (const p of plans) {
-    if (p.status.trim().toLowerCase() !== "active") continue
+    if (p.status.trim().toLowerCase() !== "active" || notStarted(p, now)) continue
     const end = startNum(p.ends_at)
     if (end > 0 && end <= now) continue
     if (active && !(end > 0 && (!startNum(active.end) || end < startNum(active.end)))) continue
     active = { name: first(str(p.name), "Start Plan"), end, until: end > 0 ? new Date(Math.trunc(end) * 1000).toISOString() : "" }
   }
-  if (!active) return null
-  const out = { plan: active.name, windows: [] }
-  if (active.until) Object.assign(out, { until: active.until, renew: "off" })
+  if (!active && !pending.length) return null
+  // with no live plan, the one starting soonest names the card
+  const out = { plan: active?.name ?? pending[0].name, windows: [], live: !!active, pending }
+  if (active?.until) Object.assign(out, { until: active.until, renew: "off" })
   const live = plans.filter((p) => {
-    if (p.status.trim().toLowerCase() !== "active") return false
+    if (p.status.trim().toLowerCase() !== "active" || notStarted(p, now)) return false
     const end = startNum(p.ends_at)
     return !(end > 0 && end <= now)
   })
@@ -678,6 +707,9 @@ async function startUsage(s) {
     }
     return { ...w, models: [...models, ...models.map(giftID)] }
   }))
+  g.windows.push(...pendingLines(g))
+  delete g.live
+  delete g.pending
   return g
 }
 
@@ -715,6 +747,12 @@ function bestBuckets(windows) {
   return best
 }
 
+// giftReadable: ZCode's session can read the gift beside a coding plan,
+// so the card asks for it even when no gift is live for requests: a plan
+// that starts later is named on the card (windy, Discord), not left out
+// because nothing could be spent yet.
+const giftReadable = (s) => !!s.jwt && !jwtExpired(s.jwt)
+
 // dualUsage shows both pools but only the pool a request can use counts
 // for its model. Live gift models don't spend the Coding windows; spent
 // or blocked gift buckets stay visible without holding up the Coding Plan.
@@ -726,29 +764,32 @@ async function dualUsage(s, out) {
   const cached = routes.get(s.key + "\0" + s.jwt)
   try {
     const g = await giftOf(s)
-    const gift = g ? { name: g.plan, models: [...new Set(g.windows.filter((w) => !w._spent)
+    const gift = g?.live ? { name: g.plan, models: [...new Set(g.windows.filter((w) => !w._spent)
       .flatMap((w) => w.models ?? []).map((m) => m.toLowerCase()))],
       allModels: uniqueModels(g.windows.flatMap((w) => w.models ?? [])) } : null
     if (cached) {
       cached.gift = gift
-      const ends = g ? [g.until, ...g.windows.map((w) => w.resetsAt)].map((t) => Date.parse(t)).filter(Number.isFinite) : []
+      // a plan that starts later is read again when it starts
+      const ends = g ? [g.until, ...g.windows.map((w) => w.resetsAt)].map((t) => Date.parse(t))
+        .concat(g.pending.map((p) => p.start * 1000)).filter(Number.isFinite) : []
       if (ends.length) cached.ttl = Math.min(cached.ttl, Math.max(0, Math.min(...ends) - cached.at))
     }
-    if (g) {
+    if (g?.live) {
       // the gift's models are its trial entries alone: a plain model stays
       // on the coding plan, and the user picks the gift by its entry
       const notModels = gift.allModels.map((m) => giftID(m).toLowerCase())
       if (notModels.length) out.windows = out.windows.map((w) => w.aside ? w : { ...w, notModels })
       // Several buckets may serve one model: one spent sibling cannot block it.
       const best = bestBuckets(g.windows)
-      const label = byPlan(g.windows)
+      // beside the Coding Plan's windows every gift bucket is named after
+      // its plan, one plan or several: "Start Plan · GLM-5.1-Trial" can't
+      // be read as the Coding Plan's own (windy, Discord)
+      const label = (name, plan) => first(plan, "Start Plan") + " · " + name
       out.windows.push(...countedFirst(g.windows.map(({ _plan: p, _spent, ...w }, i) => {
         const selected = gift.allModels.filter((m) => best.get(m.toLowerCase()) === i)
         const models = selected.map(giftID)
         const scoped = models.length ? { ...w, models } : { ...w, aside: true }
-        // the card names a bucket's model as the picker does (GLM-5.3-Flash-Trial);
-        // no plan prefix while one plan gives them all — the card's section
-        // header already says the account; with several, byPlan names each
+        // the card names a bucket's model as the picker does (GLM-5.3-Flash-Trial)
         let name = w.name
         for (const m of selected) {
           const at = name.toLowerCase().indexOf(m.toLowerCase())
@@ -757,6 +798,7 @@ async function dualUsage(s, out) {
         return { ...scoped, name: label(name, p) }
       })))
     }
+    if (g) out.windows.push(...pendingLines(g))
   } catch {
     if (cached) {
       cached.gift = null
@@ -2260,8 +2302,8 @@ export async function ZCodeAuthPlugin({ client }) {
               }
             }
             const team = await teamUsage(s, key)
-            card = saved(gift ? await dualUsage(s, team) : team)
-          } else card = saved(start ? await startUsage(s) : gift ? await dualUsage(s) : await codingUsage(s))
+            card = saved(gift || giftReadable(s) ? await dualUsage(s, team) : team)
+          } else card = saved(start ? await startUsage(s) : gift || giftReadable(s) ? await dualUsage(s) : await codingUsage(s))
           // a gift plan ZCode holds for the account but has not put on it:
           // named on the card, claimed in the ZCode app (its claim needs
           // the app's captcha attestation, see claimHint). A card that is

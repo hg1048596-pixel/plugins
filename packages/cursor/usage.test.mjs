@@ -119,8 +119,152 @@ test("a model asked for by its bare name counts in the pool its sized ids are in
   expect(["claude-opus-5-5", counts(cursor, "claude-opus-5-5"), counts(other, "claude-opus-5-5")]).toEqual(["claude-opus-5-5", false, true])
 })
 
-test("an enterprise plan's spend is no window", async () => {
+test("an enterprise plan's spend is no planUsage window", async () => {
   expect((await run(fresh(), () => Response.json({ spendLimitUsage: {} }))).u).toEqual({ windows: [], signIn: "kept" })
+})
+
+const SUMMARY = "https://cursor.com/api/usage-summary"
+const enterprise = (overall = { enabled: true, used: 4945, limit: 80000, remaining: 75055 }) => ({
+  billingCycleEnd: "2026-11-01T00:00:00.000Z",
+  membershipType: "enterprise",
+  limitType: "team",
+  individualUsage: { overall },
+  teamUsage: { onDemand: { enabled: true, used: 0, limit: null, remaining: null } },
+})
+
+test("an enterprise account's overall allowance comes from usage-summary, with native USD amounts", async () => {
+  const a = botAuth()
+  const { u, seen } = await run(a, (url) => {
+    if (url === PLAN) return Response.json({})
+    if (url === SUMMARY) return Response.json(enterprise())
+    return Response.json({ billingCycleEnd: "1792925602350" })
+  })
+  expect(u.windows).toEqual([{
+    name: "Enterprise",
+    used: (100 * 4945) / 80000,
+    display: "$49.45 / $800.00",
+    amount: 49.45,
+    limit: 800,
+    unit: "USD",
+    resetsAt: "2026-11-01T00:00:00.000Z",
+    aside: true,
+  }, {
+    name: "On-demand", used: 0, display: "$0.00", resetsAt: "2026-11-01T00:00:00.000Z", aside: true,
+  }])
+  expect(seen.find((r) => r.url === SUMMARY)).toEqual({
+    url: SUMMARY,
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Origin: "https://cursor.com",
+      Cookie: "WorkosCursorSessionToken=" + encodeURIComponent("user_test::" + a.access),
+    },
+    redirect: "error",
+  })
+})
+
+// These are dashboard fixtures, not a real account driven past its limit.
+const enterpriseOnDemand = (onDemand, used = 80000) => {
+  const data = enterprise({ enabled: true, used, limit: 80000 })
+  data.teamUsage = { onDemand }
+  return run(botAuth(), (url) => Response.json(url === SUMMARY ? data : {}))
+}
+const holdsAccount = (windows) => windows.some((w) => !w.aside && w.used >= 100)
+
+test("an enterprise allowance at or past its limit stays aside with unlimited on-demand on", async () => {
+  for (const used of [80000, 90000]) {
+    const { u } = await enterpriseOnDemand({ enabled: true, used: 12345, limit: null }, used)
+    expect(u.windows[0]).toMatchObject({ name: "Enterprise", used: 100, amount: used / 100, aside: true })
+    expect(u.windows[1]).toEqual({ name: "On-demand", used: 0, display: "$123.45", resetsAt: "2026-11-01T00:00:00.000Z", aside: true })
+    expect(holdsAccount(u.windows)).toBe(false)
+  }
+})
+
+test("an enterprise allowance at its limit is not aside with on-demand off", async () => {
+  for (const limit of [null, 50000]) {
+    const { u } = await enterpriseOnDemand({ enabled: false, used: 12345, limit })
+    expect(u.windows).toHaveLength(1)
+    expect(u.windows[0].aside).toBeUndefined()
+    expect(holdsAccount(u.windows)).toBe(true)
+  }
+})
+
+for (const [used, aside, percent] of [[0, true, 0], [49999, true, 99.998], [50000, false, 100], [60000, false, 100]]) {
+  test(`enterprise on-demand at ${used} of 50000 cents: only a budget with room keeps the allowance aside`, async () => {
+    const { u } = await enterpriseOnDemand({ enabled: true, used, limit: 50000 })
+    expect(u.windows).toHaveLength(2)
+    expect(u.windows[0].aside).toBe(aside ? true : undefined)
+    expect(u.windows[1]).toEqual({
+      name: "On-demand", used: percent, display: `$${(used / 100).toFixed(2)} / $500.00`,
+      amount: used / 100, limit: 500, unit: "USD", resetsAt: "2026-11-01T00:00:00.000Z",
+    })
+    expect(holdsAccount(u.windows)).toBe(!aside)
+  })
+}
+
+test("an enterprise account's unknown or invalid on-demand budget doesn't bypass its allowance", async () => {
+  for (const onDemand of [
+    undefined, null, {}, { enabled: "true", used: 0, limit: null },
+    { enabled: true, used: 0 }, { enabled: true, used: 0, limit: 0 },
+    { enabled: true, used: 0, limit: -1 }, { enabled: true, used: 0, limit: "unknown" },
+    { enabled: true, limit: 50000 }, { enabled: true, used: null, limit: 50000 },
+    { enabled: true, used: -1, limit: 50000 }, { enabled: true, used: "unknown", limit: 50000 },
+  ]) {
+    const { u } = await enterpriseOnDemand(onDemand)
+    expect(u.windows).toHaveLength(1)
+    expect(u.windows[0].aside).toBeUndefined()
+    expect(holdsAccount(u.windows)).toBe(true)
+  }
+})
+
+test("explicitly unlimited enterprise on-demand stays aside even when its spend is unknown", async () => {
+  const { u } = await enterpriseOnDemand({ enabled: true, limit: null })
+  expect(u.windows).toHaveLength(1)
+  expect(u.windows[0].aside).toBe(true)
+  expect(holdsAccount(u.windows)).toBe(false)
+})
+
+test("usage-summary is only asked when planUsage is missing", async () => {
+  const { seen } = await run(auth, (url) =>
+    url === PLAN ? Response.json({}) : Response.json({ planUsage: { autoPercentUsed: 1 } }),
+  )
+  expect(seen.map((r) => r.url)).not.toContain(SUMMARY)
+})
+
+test("an enterprise summary that can't be read leaves the card empty, as before", async () => {
+  for (const reply of [
+    () => new Response("no", { status: 401 }),
+    () => Response.json({ membershipType: "pro", individualUsage: { overall: { enabled: true, used: 1, limit: 2 } } }),
+    () => Response.json(enterprise({ enabled: false, used: 1, limit: 2 })),
+    () => Response.json(enterprise({ enabled: true, used: 1, limit: 0 })),
+    ...["used", "limit"].flatMap((field) =>
+      [undefined, null, "", false, true, [], [1], {}, "0", "80000", -1].map((value) =>
+        () => Response.json(enterprise({ enabled: true, used: 4945, limit: 80000, [field]: value })),
+      ),
+    ),
+    // JSON permits exponents that overflow JavaScript's finite numbers.
+    ...["used", "limit"].flatMap((field) => ["1e400", "-1e400"].map((value) =>
+      () => new Response(`{"membershipType":"enterprise","individualUsage":{"overall":{"enabled":true,"used":${field === "used" ? value : 4945},"limit":${field === "limit" ? value : 80000}}}}`),
+    )),
+    () => new Response("not JSON"),
+  ]) {
+    const { u } = await run(botAuth(), (url) => {
+      if (url === PLAN) return Response.json({})
+      if (url === SUMMARY) return reply()
+      return Response.json({ billingCycleEnd: "1792925602350" })
+    })
+    expect(u).toEqual({ windows: [], signIn: "kept" })
+  }
+})
+
+test("an enterprise summary with numeric zero used still shows the full allowance", async () => {
+  const { u } = await run(botAuth(), (url) => Response.json(
+    url === SUMMARY ? enterprise({ enabled: true, used: 0, limit: 80000 }) : {},
+  ))
+  expect(u.windows[0]).toEqual({
+    name: "Enterprise", used: 0, display: "$0.00 / $800.00",
+    amount: 0, limit: 800, unit: "USD", resetsAt: "2026-11-01T00:00:00.000Z", aside: true,
+  })
 })
 
 test("a refused token is the status magpie says", async () => {
@@ -326,4 +470,63 @@ test("Bot is among the first three windows ahead of an On-demand with no limit, 
   expect(open.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Grok Bot", "On-demand", "Total"])
   const capped = (await botOnDemand({ ...spent, spendLimitUsage: { individualUsed: 500, limitType: "user" } }, { hardLimit: 20 })).u
   expect(capped.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "On-demand", "Grok Bot", "Total"])
+})
+
+// majiang_ai on X: a plan of Cursor's merged (xAI) billing has no Other
+// Models pool. Its included usage is one allowance for every model, which
+// the dashboard's usage page shows as one meter, "Weekly usage limit", the
+// period's totalPercentUsed. The replies are a real Premium account's
+// (2026-10-29), its autoBucketModels cut short.
+const mergedPlan = { planInfo: { planName: "Premium", price: "", billingCycleEnd: "1794547141340", includedUsagePeriod: "INCLUDED_USAGE_PERIOD_WEEKLY", includedUsageResetsAt: "1793683212396" }, isMerged: true }
+const mergedPeriod = {
+  billingCycleStart: "1793078412396",
+  billingCycleEnd: "1793683212396",
+  planUsage: { remainingBonus: false, autoPercentUsed: 21.9, apiPercentUsed: 0, totalPercentUsed: 21.9 },
+  spendLimitUsage: { limitType: "user" },
+  enabled: true,
+  autoBucketModels: ["default", "composer-2.5", "grok-4.7"],
+}
+const weekEnd = new Date(1793683212396).toISOString()
+
+test("a merged plan's included usage is one Weekly window for every model, with no Other Models", async () => {
+  const { u } = await run(fresh(), (url) => (url === PLAN ? Response.json(mergedPlan) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod)))
+  expect(u.plan).toBe("Premium")
+  expect(u.windows).toEqual([{ name: "Weekly", used: 21.9, resetsAt: weekEnd, span: 604800 }])
+  for (const m of [...firstParty, ...others]) expect([m, counts(u.windows[0], m)]).toEqual([m, true])
+})
+
+test("a merged plan whose period is a month says Monthly, and a numeric enum is read too", async () => {
+  const { u } = await run(fresh(), (url) =>
+    url === PLAN ? Response.json({ ...mergedPlan, planInfo: { ...mergedPlan.planInfo, includedUsagePeriod: 1 } }) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod),
+  )
+  expect(u.windows).toEqual([{ name: "Monthly", used: 21.9, resetsAt: weekEnd }])
+})
+
+test("a merged plan that may spend on-demand keeps its Weekly aside and shows the On-demand", async () => {
+  const { u } = await run(fresh(), (url) => (url === PLAN ? Response.json(mergedPlan) : url === HARD ? Response.json({ hardLimit: 50 }) : Response.json({ ...mergedPeriod, spendLimitUsage: { limitType: "user", individualUsed: 1000 } })))
+  expect(u.windows).toEqual([
+    { name: "Weekly", used: 21.9, resetsAt: weekEnd, span: 604800, aside: true },
+    { name: "On-demand", used: 20, display: "$10.00 / $50.00", resetsAt: weekEnd },
+  ])
+})
+
+test("a merged plan's Grok Bot goes after its Weekly", async () => {
+  const a = botAuth()
+  const { u } = await run(a, (url) => (url === PLAN ? Response.json(mergedPlan) : url === BOT ? Response.json(paidBot) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod)))
+  expect(u.windows.map((w) => w.name)).toEqual(["Weekly", "Grok Bot"])
+})
+
+test("an unmerged plan, or one GetPlanInfo can't say, keeps the two pools", async () => {
+  for (const plan of [{ planInfo: { planName: "Ultra", includedUsagePeriod: "INCLUDED_USAGE_PERIOD_MONTHLY" }, isMerged: false }, new Response("no", { status: 500 })]) {
+    const { u } = await run(fresh(), (url) => (url === PLAN ? (plan instanceof Response ? plan : Response.json(plan)) : Response.json(mergedPeriod)))
+    expect(u.windows.map((w) => w.name)).toEqual(["Cursor Models", "Other Models", "Total"])
+  }
+})
+
+test("a merged plan read once is kept for the hour, not asked again", async () => {
+  const a = fresh()
+  await run(a, (url) => (url === PLAN ? Response.json(mergedPlan) : Response.json(mergedPeriod)))
+  const { u, seen } = await run(a, (url) => (url === PLAN ? new Response("no", { status: 500 }) : Response.json(mergedPeriod)))
+  expect(seen.map((r) => r.url)).not.toContain(PLAN)
+  expect(u.windows.map((w) => w.name)).toEqual(["Weekly"])
 })

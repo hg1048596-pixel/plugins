@@ -15,6 +15,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
+import { unz } from "./testdata/unz.mjs"
 
 let WorkBuddyAuthPlugin, WorkBuddyAIAuthPlugin, _internal
 beforeAll(async () => {
@@ -246,7 +247,7 @@ function serve({ good = ["old"] } = {}) {
   globalThis.fetch = async (url, init) => {
     const u = new URL(String(url instanceof Request ? url.url : url))
     const headers = new Headers(init?.headers)
-    calls.push({ url: u.href, path: u.pathname, headers, body: init?.body })
+    calls.push({ url: u.href, path: u.pathname, headers, body: unz(init?.body) })
     if (u.pathname === REFRESH) return ok(RENEWED)
     const token = (headers.get("authorization") ?? "").replace(/^Bearer /, "")
     return good.includes(token) ? new Response(SSE, { headers: { "content-type": "text/event-stream" } }) : refusedToken()
@@ -355,7 +356,7 @@ test("a chat request still goes through the chat route's rewrites", async () => 
   const opts = await hooks.auth.loader(async () => signedIn())
   const body = JSON.stringify({ model: "glm-5.3", max_completion_tokens: 4096, stream: true, messages: [{ role: "user", content: "hi" }] })
   await opts.fetch("https://copilot.tencent.com/v2/chat/completions", { method: "POST", body })
-  const sent = JSON.parse(calls[0].body)
+  const sent = JSON.parse(calls.find((c) => c.path === "/v2/chat/completions").body)
   expect(sent.max_tokens).toBe(4096)
   expect(sent.max_completion_tokens).toBeUndefined()
   expect(sent.messages[0].role).toBe("system")
@@ -446,7 +447,7 @@ test("a signature WorkBuddy didn't make is refused once, then the request goes w
     const u = new URL(String(url))
     if (u.pathname.endsWith("/token/refresh")) return ok(RENEWED)
     n++
-    seen.push(JSON.parse(init.body))
+    seen.push(JSON.parse(unz(init.body)))
     // the first try is refused, the retry (without thinking) answers
     return n === 1 ? new Response(REFUSAL, { status: 500 }) : new Response(SSE, { headers: { "content-type": "text/event-stream" } })
   }

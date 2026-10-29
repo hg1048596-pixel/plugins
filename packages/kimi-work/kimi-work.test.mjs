@@ -117,3 +117,32 @@ test('the Work token goes only to the official Work chat endpoint', async () => 
   await expect(loader.fetch(I.BASE + '/chat/completions', {method: 'GET'})).rejects.toThrow('仅接受官方');
   expect(called).toBe(0);
 });
+
+// #465 (kongbai01203): Kimi answered a spent account with a 403, which magpie
+// took for a key fault and kept routing to. The words are the reporter's own
+// (usage.jsonl and `magpie provider test kimi-work`); the issue doesn't show
+// the JSON around them, so both an OpenAI-style and a Connect-style body are
+// tried.
+for (const body of [
+  JSON.stringify({error: {message: "You've reached your usage limit for this billing cycle.", type: 'permission_denied_error'}}),
+  JSON.stringify({code: 'resource_exhausted', message: 'insufficient balance'}),
+  JSON.stringify({error: {code: 'resource_exhausted', message: 'insufficient balance'}}),
+]) test('a spent allowance\'s 403 goes out as a 429 with Kimi\'s words: ' + body, async () => {
+  const p = I.createPlugin({readSession: () => session, fetchImpl: async () => new Response(body,
+    {status: 403, headers: {'Content-Type': 'application/json', 'Retry-After': '3600'}})});
+  const loader = await p.auth.loader(async () => auth);
+  const response = await loader.fetch(I.BASE + '/chat/completions', {method: 'POST', body: '{}'});
+  expect(response.status).toBe(429);
+  expect(response.headers.get('retry-after')).toBe('3600');
+  expect(response.headers.get('content-type')).toBe('application/json');
+  expect(await response.text()).toBe(body);
+});
+
+test('a 403 that is not about the allowance stays a 403', async () => {
+  const body = JSON.stringify({error: {message: 'Access denied for this model', type: 'permission_denied_error'}});
+  const p = I.createPlugin({readSession: () => session, fetchImpl: async () => new Response(body, {status: 403})});
+  const loader = await p.auth.loader(async () => auth);
+  const response = await loader.fetch(I.BASE + '/chat/completions', {method: 'POST', body: '{}'});
+  expect(response.status).toBe(403);
+  expect(await response.text()).toBe(body);
+});

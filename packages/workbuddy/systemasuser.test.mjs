@@ -7,6 +7,7 @@
 // Claude Code's identity line.
 import { expect, test } from "bun:test"
 import { WorkBuddyAuthPlugin, WorkBuddyAIAuthPlugin, _internal } from "./index.mjs"
+import { unz } from "./testdata/unz.mjs"
 
 const { systemAsUser, REFUSED_HINT, DEFAULT_SYSTEM } = _internal
 
@@ -36,7 +37,7 @@ async function withService(Plugin, fn, answer) {
   const realFetch = globalThis.fetch
   const sent = []
   globalThis.fetch = async (_url, init) => {
-    const b = JSON.parse(init.body)
+    const b = JSON.parse(unz(init.body))
     sent.push(b)
     const said = answer?.(b)
     if (said) return said
