@@ -797,7 +797,7 @@ function fullToDelta(full, sent) {
  */
 function stripTrailingEnvelope(text) {
   const raw = String(text ?? "")
-  const opening = /\{\s*"action"\s*:/g
+  const opening = /\{\s*"action"\s*:/gi
   const starts = []
   let m
   while ((m = opening.exec(raw))) starts.push(m.index)
@@ -815,7 +815,7 @@ function stripTrailingEnvelope(text) {
       .trim()
     try {
       const obj = JSON.parse(tail)
-      if (isActionEnvelope(obj)) return raw.slice(0, idx)
+      if (isActionEnvelope(obj) && raw.slice(0, idx).trim()) return raw.slice(0, idx)
     } catch {
       /* not a whole object from here; try an earlier opening */
     }
@@ -992,20 +992,20 @@ const ENVELOPE_ACTIONS = new Set(["completion", "ask", "review", "start", "plann
  */
 function isActionEnvelope(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false
-  const action = obj.action
+  const action = obj.action ?? obj.Action
   if (typeof action !== "string") return false
   const hasPayload =
-    typeof obj.taskCompletion === "string" ||
+    typeof (obj.taskCompletion ?? obj.TaskCompletion) === "string" ||
     typeof obj.thinking === "string" ||
     typeof obj.content === "string" ||
     typeof obj.question === "string"
   if (ENVELOPE_ACTIONS.has(action.toLowerCase())) return hasPayload
-  return typeof obj.taskCompletion === "string"
+  return typeof (obj.taskCompletion ?? obj.TaskCompletion) === "string"
 }
 
 /** The last position where an envelope opening starts and is followed by nothing. */
 function envelopeTailAt(s) {
-  const opening = /\{\s*"action"\s*:/g
+  const opening = /\{\s*"action"\s*:/gi
   const starts = []
   let m
   while ((m = opening.exec(s))) if (m.index > 0) starts.push(m.index)
@@ -1033,7 +1033,8 @@ function appendedEnvelopeAt(s) {
     // the fence in front of it belongs to the envelope too
     const before = s.slice(0, at)
     const fence = before.match(/```(?:json)?\s*$/i)
-    return fence ? before.length - fence[0].length : at
+    const start = fence ? before.length - fence[0].length : at
+    if (s.slice(0, start).trim()) return start
   }
   return -1
 }
@@ -1048,6 +1049,11 @@ function appendedEnvelopeAt(s) {
  */
 function appendedEnvelopePendingAt(s) {
   const starts = envelopeTailAt(s)
+  // The opening can itself span more than ENVELOPE_TAIL characters (for
+  // example, a pretty-printed object with a long whitespace prefix). Hold
+  // a partial opening before its action key is complete as well.
+  const partial = s.lastIndexOf("{")
+  if (partial > 0 && !starts.includes(partial) && couldBeEnvelope(s.slice(partial))) starts.push(partial)
   if (!starts.length) return -1
   const at = starts[starts.length - 1]
   const tail = s
@@ -1064,7 +1070,8 @@ function appendedEnvelopePendingAt(s) {
   if (!couldBeEnvelope(tail)) return -1
   const before = s.slice(0, at)
   const fence = before.match(/```(?:json)?\s*$/i)
-  return fence ? before.length - fence[0].length : at
+  const start = fence ? before.length - fence[0].length : at
+  return s.slice(0, start).trim() ? start : -1
 }
 
 function createAnswerExtractor() {
@@ -1080,13 +1087,24 @@ function createAnswerExtractor() {
   /**
    * What the answer should be, given everything received so far.
    *
-   * Order matters. A trailing envelope is decided first, then a trailing object
-   * that is still arriving, and only then the question of whether the *whole*
-   * reply is an envelope. That last test is `couldBeEnvelope(raw)` on the reply
-   * itself — never `answerStart(raw)` on its own, which is what used to cut a
-   * reply that merely mentions the field name.
+   * A reply that starts like an envelope is ambiguous until EOF: it can also
+   * be a JSON example followed by prose. Hold that candidate until its complete
+   * shape is known, so decoding it never discards later text. Ordinary prose
+   * and reasoning still stream as they arrive.
    */
   const answerSoFar = () => {
+    if (couldBeEnvelope(raw)) {
+      if (!final) return ""
+      if (isEnvelope(raw)) return unwrapAnswer(raw)
+      // Preserve the decoded prefix if upstream ended inside the answer string.
+      // A closed string followed by prose is an example, so keep it verbatim.
+      const start = answerStart(raw)
+      if (start >= 0) {
+        const decoded = decodeJsonString(raw.slice(start))
+        if (!decoded.ended) return decoded.text
+      }
+      return stripTrailingEnvelope(raw)
+    }
     const appended = appendedEnvelopeAt(raw)
     if (appended > 0) return raw.slice(0, appended)
 
@@ -1096,15 +1114,6 @@ function createAnswerExtractor() {
     if (!final) {
       const pending = appendedEnvelopePendingAt(raw)
       if (pending > 0) return raw.slice(0, pending)
-    }
-
-    // The reply itself may be the envelope (optionally fenced). Only then is its
-    // answer read out of a field.
-    if (couldBeEnvelope(raw)) {
-      const start = answerStart(raw)
-      if (start >= 0) return decodeJsonString(raw.slice(start)).text
-      // still arriving, or an envelope whose answer field is not a string
-      return final ? stripTrailingEnvelope(raw) : ""
     }
 
     // no envelope at all: the reply is its own answer
@@ -1201,6 +1210,21 @@ function errorStatus(text, pacer) {
 /** At most this much of the stream head is read: enough to see whether the first frame is an answer or an error. */
 const SSE_PEEK_LIMIT = 8 * 1024
 
+/** Cancel without waiting for a peer that may keep its socket open. */
+function releaseReader(reader) {
+  if (!reader) return
+  try {
+    void reader.cancel().catch(() => {})
+  } catch {
+    /* already released */
+  }
+  try {
+    reader.releaseLock()
+  } catch {
+    /* a pending read owns the lock until cancellation completes */
+  }
+}
+
 /**
  * Read the stream head until it's clear whether this is an answer or an error —
  * following packages/codearts' peekAnswer.
@@ -1214,25 +1238,30 @@ async function peekAnswer(body) {
   if (!body) return head
   head.reader = body.getReader()
   let done = false
-  for (;;) {
-    const v = classifyHead(head.text, done)
-    if (v) {
-      head.verdict = v
-      break
+  try {
+    for (;;) {
+      const v = classifyHead(head.text, done)
+      if (v) {
+        head.verdict = v
+        break
+      }
+      if (head.text.length >= SSE_PEEK_LIMIT) break
+      const r = await head.reader.read()
+      if (r.done) {
+        done = true
+        continue
+      }
+      head.chunks.push(r.value)
+      head.text += head.decoder.decode(r.value, { stream: true })
     }
-    if (head.text.length >= SSE_PEEK_LIMIT) break
-    const r = await head.reader.read()
-    if (r.done) {
-      done = true
-      continue
-    }
-    head.chunks.push(r.value)
-    head.text += head.decoder.decode(r.value, { stream: true })
+  } catch (err) {
+    releaseReader(head.reader)
+    throw err
   }
   if (head.verdict === "error") {
     // an error stream is dropped outright; cancel isn't awaited, it can hang on
     // a live stream
-    void head.reader.cancel().catch(() => {})
+    releaseReader(head.reader)
   }
   return head
 }
@@ -1243,7 +1272,8 @@ async function peekAnswer(body) {
  * (or an empty one).
  */
 function classifyHead(text, done) {
-  const [lines] = takeSseLines(text)
+  const [lines, rest] = takeSseLines(text)
+  if (done && rest.trim()) lines.push(rest)
   for (const line of lines) {
     const ev = parseSseLine(line)
     if (!ev) continue
@@ -1257,7 +1287,8 @@ function classifyHead(text, done) {
 
 /** Pull upstream's error text out of the stream head already read. */
 function errorCodeFromHead(text) {
-  const [lines] = takeSseLines(text)
+  const [lines, rest] = takeSseLines(text)
+  if (rest.trim()) lines.push(rest)
   for (const line of lines) {
     const ev = parseSseLine(line)
     if (ev?.error) return ev.error
@@ -1277,16 +1308,18 @@ function replayBody(head) {
       try {
         const r = await head.reader.read()
         if (r.done) {
+          releaseReader(head.reader)
           controller.close()
           return
         }
         controller.enqueue(r.value)
       } catch (err) {
+        releaseReader(head.reader)
         controller.error(err)
       }
     },
     cancel(reason) {
-      return head.reader.cancel(reason).catch(() => {})
+      releaseReader(head.reader)
     },
   })
 }
@@ -1324,12 +1357,7 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
       }
       return
     }
-    try {
-      const r = reader.cancel()
-      if (r && typeof r.catch === "function") r.catch(() => {})
-    } catch {
-      /* ignore */
-    }
+    releaseReader(reader)
   }
 
   const chunk = (delta, finish = null, extra = {}) =>
@@ -1380,6 +1408,36 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
       reader = upstreamBody.getReader()
       const decoder = new TextDecoder()
       let buf = ""
+      // A final line without a newline follows exactly the same path as every
+      // complete line, including error classification and account cool-down.
+      const absorb = (line) => {
+        const ev = parseSseLine(line)
+        if (!ev) return
+        if (ev.done) {
+          finishUp("stop")
+          return
+        }
+        if (ev.error) {
+          closed = true
+          const m = errorStatus(ev.error, pacer)
+          controller.error(Object.assign(new Error(`OrcaTerm: ${ev.error}`), { statusCode: m.status }))
+          return
+        }
+        const textDelta = typeof ev.full === "string" ? fullToDelta(ev.full, sentContent) : (ev.content ?? "")
+        if (textDelta) {
+          sentContent += textDelta
+          const visible = answer.push(textDelta)
+          if (visible) {
+            emitText += visible.length
+            push(chunk({ content: visible }))
+          }
+        }
+        const reasonDelta = ev.reasoning ?? ""
+        if (reasonDelta) {
+          sentReasoning += reasonDelta
+          push(chunk({ reasoning_content: reasonDelta }))
+        }
+      }
       try {
         for (;;) {
           const { done, value } = await reader.read()
@@ -1388,69 +1446,15 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
           const [lines, rest] = takeSseLines(buf)
           buf = rest
           for (const line of lines) {
-            const ev = parseSseLine(line)
-            if (!ev) continue
-            if (ev.done) {
-              finishUp("stop")
-              return
-            }
-            if (ev.error) {
-              // A failure halfway through the stream: end this stream with an
-              // error instead of sending some text and closing normally. The
-              // latter would let magpie count it as a success — no failover, no
-              // rest for the account.
-              closed = true
-              const m = errorStatus(ev.error, pacer)
-              controller.error(Object.assign(new Error(`OrcaTerm: ${ev.error}`), { statusCode: m.status }))
-              releaseUpstream()
-              return
-            }
-
-            // `content` is this frame's increment and is used as is; only
-            // `fullContent` (the whole text so far) has to be converted to an
-            // increment. Treating a content that started with what was already
-            // sent as cumulative and truncating it was wrong: "haha" after "ha"
-            // got cut to "", and the text was lost.
-            const textDelta = typeof ev.full === "string" ? fullToDelta(ev.full, sentContent) : (ev.content ?? "")
-            if (textDelta) {
-              sentContent += textDelta
-              // the answer lives inside the assistant's action envelope; only
-              // the answer itself goes out
-              const visible = answer.push(textDelta)
-              if (visible) {
-                emitText += visible.length
-                push(chunk({ content: visible }))
-              }
-            }
-
-            // thinking works the same way: content-style increments go out as
-            // is, fullContent-style ones get converted
-            let reasonDelta = ev.reasoning ?? ""
-            if (reasonDelta) {
-              sentReasoning += reasonDelta
-              push(chunk({ reasoning_content: reasonDelta }))
-            }
+            absorb(line)
+            if (closed) return
           }
         }
         const [tailLines, tailRest] = takeSseLines(buf)
         const pending = tailRest.trim() ? [...tailLines, tailRest] : tailLines
         for (const line of pending) {
-          const ev = parseSseLine(line)
-          if (!ev || ev.done || ev.error) continue
-          const d = typeof ev.full === "string" ? fullToDelta(ev.full, sentContent) : (ev.content ?? "")
-          if (d) {
-            sentContent += d
-            const visible = answer.push(d)
-            if (visible) {
-              emitText += visible.length
-              push(chunk({ content: visible }))
-            }
-          }
-          const r = ev.reasoning ?? ""
-          if (r) {
-            sentReasoning += r
-            push(chunk({ reasoning_content: r }))
-          }
+          absorb(line)
+          if (closed) return
         }
         finishUp("stop")
       } catch (err) {
@@ -1465,8 +1469,9 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
               statusCode: err?.name === "AbortError" ? 499 : 502,
             }),
           )
-          releaseUpstream()
         }
+      } finally {
+        releaseUpstream()
       }
     },
     // cut upstream off the moment the client disconnects (the agent gave up),
@@ -1495,6 +1500,7 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
   let sawDone = false
 
   const absorb = (line) => {
+    if (sawDone || upstreamError) return
     const ev = parseSseLine(line)
     if (!ev) return
     if (ev.done) {
@@ -1518,27 +1524,31 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
     }
   }
 
-  for (;;) {
-    let chunkRead
-    try {
-      chunkRead = await reader.read()
-    } catch (err) {
-      // Client abort / connection lost: answer with a real error status; it
-      // must not be dressed up as an answer. Earlier this returned 200 plus a
-      // "connection lost" text, magpie took it as success, and failover stopped.
-      const aborted = err?.name === "AbortError"
-      return openaiError(aborted ? 499 : 502, `OrcaTerm connection broke: ${err?.message ?? err}`)
+  try {
+    for (;;) {
+      let chunkRead
+      try {
+        chunkRead = await reader.read()
+      } catch (err) {
+        // Client abort / connection lost: answer with a real error status; it
+        // must not be dressed up as an answer. Earlier this returned 200 plus a
+        // "connection lost" text, magpie took it as success, and failover stopped.
+        const aborted = err?.name === "AbortError"
+        return openaiError(aborted ? 499 : 502, `OrcaTerm connection broke: ${err?.message ?? err}`)
+      }
+      const { done, value } = chunkRead
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const [lines, rest] = takeSseLines(buf)
+      buf = rest
+      for (const line of lines) absorb(line)
+      if (sawDone || upstreamError) {
+        buf = ""
+        break
+      }
     }
-    const { done, value } = chunkRead
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const [lines, rest] = takeSseLines(buf)
-    buf = rest
-    for (const line of lines) absorb(line)
-    if (sawDone) {
-      buf = ""
-      break
-    }
+  } finally {
+    releaseReader(reader)
   }
   if (buf.trim() && !sawDone) absorb(buf)
 
@@ -2002,6 +2012,7 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
 
             let res
             try {
+              if (init?.signal?.aborted) return openaiError(499, "the client cancelled the request")
               res = await callAssistant({
                 auth: bound,
                 upstream,
@@ -2010,89 +2021,91 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
                 mode: MODE.react,
                 signal: init?.signal,
               })
-            } catch (err) {
-              // an interruption (the client gave up) isn't an upstream fault
-              if (err?.name === "AbortError") return openaiError(499, "the client cancelled the request")
-              return openaiError(502, `cannot reach OrcaTerm: ${redactUrl(err?.message ?? err)}`)
-            }
-
-            if (!res.ok) {
-              const info = await classifyUpstreamError(res)
-              // A limit reported by the status line rather than inside the body
-              // has to cool this account's pacer down as well, or the next
-              // request walks straight back into it.
-              if (info.status === 429 || res.status === 429) pacer.penalize()
-              // Only a confirmed sign-in problem answers 401 (magpie marks the
-              // account and stops dispatching on a 401 by default); quota gone /
-              // risk control / 5xx all answer 502, so magpie fails over instead
-              // of mistaking it for a new sign-in.
-              const status = info.signIn ? 401 : info.status >= 400 ? info.status : 502
-              const e = openaiError(status, `OrcaTerm: ${info.message}`, info.code)
-              if (info.signIn) e.headers.set("x-magpie-sign-in", info.signIn)
-              return e
-            }
-
-            // Upstream can answer 200 with something that isn't SSE at all: a
-            // JSON error, an HTML sign-in page, a plain-text risk-control
-            // notice. Anything whose content-type isn't event-stream is treated
-            // as an error — otherwise the SSE parser swallows it silently and
-            // the client sees an empty 200 answer, which is painful to diagnose.
-            const ctype = res.headers.get("content-type") ?? ""
-            const looksSSE = ctype.includes("event-stream")
-            const looksHTML = ctype.includes("html") || ctype.includes("xml")
-            if (!looksSSE) {
-              const text = await res.text()
-              let msg = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)
-              let json = null
-              try {
-                json = JSON.parse(text)
-                msg = json?.error?.message ?? json?.message ?? msg
-              } catch {
-                /* HTML / plain text: use the tag-stripped text */
+              if (!res.ok) {
+                const info = await classifyUpstreamError(res)
+                // A limit reported by the status line rather than inside the body
+                // has to cool this account's pacer down as well, or the next
+                // request walks straight back into it.
+                if (info.status === 429 || res.status === 429) pacer.penalize()
+                // Only a confirmed sign-in problem answers 401 (magpie marks the
+                // account and stops dispatching on a 401 by default); quota gone /
+                // risk control / 5xx all answer 502, so magpie fails over instead
+                // of mistaking it for a new sign-in.
+                const status = info.signIn ? 401 : info.status >= 400 ? info.status : 502
+                const e = openaiError(status, `OrcaTerm: ${info.message}`, info.code)
+                if (info.signIn) e.headers.set("x-magpie-sign-in", info.signIn)
+                return e
               }
-              // Classify by the upstream's own words — including the JSON body it
-              // sends for a rate limit, `{"code":429,"message":"Rate limit
-              // exceeded: chat-rpm"}`. Answering 502 for that made magpie treat a
-              // limit as a server fault: no account switch, and the pacer never
-              // cooled down, so the next request walked into the same wall.
-              const m = errorStatus(`${json?.code ?? ""} ${msg} ${text}`, pacer)
-              const signIn = /NEED_UIN_AND_SKEY|VERIFY_SKEY_UIN_FAILED|VERIFY_LOGIN_FAILED|VERIFY_USER_FAILED/i.test(msg)
-                ? "expired"
-                : undefined
-              const status = signIn ? 401 : m.status
-              const e = openaiError(
-                status,
-                `OrcaTerm${looksHTML ? " returned a non-SSE response (a gateway or sign-in page may have intercepted it)" : ""}: ${msg || "empty response"}`,
-                json?.code ?? "upstream_error",
-                signIn ? undefined : m.type,
-              )
-              if (signIn) e.headers.set("x-magpie-sign-in", signIn)
-              return e
+
+              // Upstream can answer 200 with something that isn't SSE at all: a
+              // JSON error, an HTML sign-in page, a plain-text risk-control
+              // notice. Anything whose content-type isn't event-stream is treated
+              // as an error — otherwise the SSE parser swallows it silently and
+              // the client sees an empty 200 answer, which is painful to diagnose.
+              const ctype = res.headers.get("content-type") ?? ""
+              const looksSSE = ctype.includes("event-stream")
+              const looksHTML = ctype.includes("html") || ctype.includes("xml")
+              if (!looksSSE) {
+                const text = await res.text()
+                let msg = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)
+                let json = null
+                try {
+                  json = JSON.parse(text)
+                  msg = json?.error?.message ?? json?.message ?? msg
+                } catch {
+                  /* HTML / plain text: use the tag-stripped text */
+                }
+                // Classify by the upstream's own words — including the JSON body it
+                // sends for a rate limit, `{"code":429,"message":"Rate limit
+                // exceeded: chat-rpm"}`. Answering 502 for that made magpie treat a
+                // limit as a server fault: no account switch, and the pacer never
+                // cooled down, so the next request walked into the same wall.
+                const m = Number(json?.code) === 429
+                  ? errorStatus("rate limit", pacer)
+                  : errorStatus(`${json?.code ?? ""} ${msg} ${text}`, pacer)
+                const signIn = /NEED_UIN_AND_SKEY|VERIFY_SKEY_UIN_FAILED|VERIFY_LOGIN_FAILED|VERIFY_USER_FAILED/i.test(msg)
+                  ? "expired"
+                  : undefined
+                const status = signIn ? 401 : m.status
+                const e = openaiError(
+                  status,
+                  `OrcaTerm${looksHTML ? " returned a non-SSE response (a gateway or sign-in page may have intercepted it)" : ""}: ${msg || "empty response"}`,
+                  json?.code ?? "upstream_error",
+                  signIn ? undefined : m.type,
+                )
+                if (signIn) e.headers.set("x-magpie-sign-in", signIn)
+                return e
+              }
+              // a missing content-type needs its fallback too: no body is a
+              // straight error, not a silent empty answer
+              if (!res.body) return openaiError(502, "OrcaTerm returned an empty response")
+
+              // Upstream reports a failure as `data: [ERROR]: …` while the HTTP
+              // status stays 200. The head is read first to tell an answer from an
+              // error: quota gone has to be 429 so magpie switches accounts, and a
+              // dead sign-in has to be 401 to mark the account — otherwise the
+              // failure is taken for a normal answer.
+              const head = await peekAnswer(res.body)
+              if (head.verdict === "error") {
+                const code = errorCodeFromHead(head.text)
+                const m = errorStatus(code, pacer)
+                const e = openaiError(m.status, `OrcaTerm: ${code}`, code, m.type)
+                if (m.status === 401) e.headers.set("x-magpie-sign-in", "expired")
+                return e
+              }
+
+              // The stream head has already been read; splice it back in before
+              // handing the stream to the converters, or the opening text is lost
+              const body = replayBody(head)
+
+              if (stream) return upstreamToOpenAI(body, { model, pacer })
+              return await upstreamToJSON(body, { model, pacer })
+            } catch (err) {
+              if (err?.name === "AbortError" || init?.signal?.aborted) {
+                return openaiError(499, "the client cancelled the request")
+              }
+              return openaiError(502, `cannot read OrcaTerm response: ${redactUrl(err?.message ?? err)}`)
             }
-            // a missing content-type needs its fallback too: no body is a
-            // straight error, not a silent empty answer
-            if (!res.body) return openaiError(502, "OrcaTerm returned an empty response")
-
-            // Upstream reports a failure as `data: [ERROR]: …` while the HTTP
-            // status stays 200. The head is read first to tell an answer from an
-            // error: quota gone has to be 429 so magpie switches accounts, and a
-            // dead sign-in has to be 401 to mark the account — otherwise the
-            // failure is taken for a normal answer.
-            const head = await peekAnswer(res.body)
-            if (head.verdict === "error") {
-              const code = errorCodeFromHead(head.text)
-              const m = errorStatus(code, pacer)
-              const e = openaiError(m.status, `OrcaTerm: ${code}`, code, m.type)
-              if (m.status === 401) e.headers.set("x-magpie-sign-in", "expired")
-              return e
-            }
-
-            // The stream head has already been read; splice it back in before
-            // handing the stream to the converters, or the opening text is lost
-            const body = head.chunks.length ? replayBody(head) : res.body
-
-            if (stream) return upstreamToOpenAI(body, { model, pacer })
-            return upstreamToJSON(body, { model, pacer })
           },
         }
       },

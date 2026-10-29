@@ -316,6 +316,13 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
         } catch {
           /* ignore */
         }
+        if (!body || typeof body !== "object" || Array.isArray(body) ||
+            typeof body.state !== "string" || typeof body.code !== "string" ||
+            (body.error !== undefined && typeof body.error !== "string")) {
+          res.writeHead(400, { "content-type": "application/json" })
+          res.end(JSON.stringify({ ok: false, error: "invalid callback body" }))
+          return
+        }
         // the code must belong to the sign-in this page started
         const stateOk = body.state === state
         const ok = Boolean(body.code) && !body.error && stateOk

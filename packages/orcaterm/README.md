@@ -233,6 +233,10 @@ The upstream answers in SSE frames whose `content` is that frame's addition (and
 `fullContent`, when present, is everything so far); those become OpenAI deltas, with reasoning kept in
 `reasoning_content`.
 
+If a reply starts like the assistant's JSON envelope, its text is held until the reply ends so a
+JSON example followed by more explanation cannot be mistaken for metadata. Plain prose and
+reasoning still stream normally. Leading whitespace and JSON fences are accepted.
+
 Two consequences worth knowing:
 
 - **No tool calls.** The assistant runs its own tools server-side and never emits `tool_calls`, so
@@ -257,7 +261,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-66 tests over seven files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+87 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |
@@ -267,6 +271,7 @@ bun test
 | `chunks.test.mjs` | frames that look cumulative but aren't; a frame split across chunks; a reset mid-stream; cancelling reaching the upstream |
 | `peek.test.mjs` | a refusal read from the head of the stream becoming 429/401/502, and a real answer surviving the peek |
 | `usage.test.mjs` | which `usageStats` row is the AI allowance |
+| `audit.test.mjs` | invalid callback bodies; envelope whitespace and examples; EOF error frames; JSON error codes; reader cleanup; read failures and cancellation |
 | `review.test.mjs` | the cases the reviews turned up: a reply containing `{"action": …}` is not truncated (including one character at a time, and one that ends mid-envelope); the JSON 429 is a 429; pacers are per account; only nine models are listed; a chat makes exactly one request and it is not `/conversation`; and `/cb` refuses a foreign `Origin`, a rebinding page, and a `state` it did not issue |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
