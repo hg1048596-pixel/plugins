@@ -133,7 +133,9 @@ ssh -L 4080:127.0.0.1:4080 <server>
 `ORCATERM_CAPTURE_PORT`, `ORCATERM_CAPTURE_HOST` and `ORCATERM_CAPTURE_BASE` override the address.
 `ORCATERM_CAPTURE_HOST` is what the socket binds to, and it defaults to the loopback; setting it to
 `0.0.0.0` means anyone who can reach the machine can load the sign-in page, and the `state` it carries
-is in that page's HTML — so only do that behind something that restricts who can connect.
+is in that page's HTML — so only do that behind something that restricts who can connect. A wildcard
+bind accepts the page from this machine's own interface addresses, so reaching it by LAN address
+works; every other origin is refused.
 
 The token is renewed before it expires through `OAuthRefreshToken`, so a normal session never asks
 you to scan again.
@@ -255,7 +257,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-65 tests over seven files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+66 tests over seven files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |

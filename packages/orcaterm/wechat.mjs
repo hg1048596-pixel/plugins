@@ -21,6 +21,7 @@
  * Tencent Cloud console session.
  */
 import http from "node:http"
+import os from "node:os"
 
 export const OAUTH_BASE = "https://orcaterm.com"
 
@@ -355,40 +356,31 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
   // The origin the page is actually served from, known once the socket is bound.
   let pageOrigin = ""
 
+  // Origins this server may be reached by, filled in once the socket is bound.
+  const boundOrigins = new Set()
+
   /**
    * Which `Origin`s a POST to /cb may carry.
    *
-   * Only the page this server actually serves — `pageOrigin`, which is built from
-   * the address the socket is bound to — plus the proxy's origin when
-   * `ORCATERM_CAPTURE_BASE` points at one.
+   * Only addresses this server is actually reachable on — built here from the
+   * bind address and, for a wildcard bind, this machine's own interface
+   * addresses — plus the proxy's origin when `ORCATERM_CAPTURE_BASE` points at
+   * one.
    *
    * `Origin` is deliberately **not** compared with the request's `Host`: both
    * come from the request, so a DNS-rebinding page (`Host: evil.example`,
    * `Origin: http://evil.example`, resolving to 127.0.0.1) satisfies that
    * comparison and could settle the sign-in with a code of its own. The state is
-   * in the page's HTML, so it is not a secret against anyone who can load the
-   * page — which is why the origin has to be checked against a value the request
-   * cannot supply.
+   * in the page's HTML, so it is no secret against anyone who can load the page —
+   * which is why the origin is checked against addresses the request cannot
+   * invent. A rebinding page still sends its own hostname as the origin, never a
+   * bare interface address, so listing those is safe and keeps
+   * `ORCATERM_CAPTURE_HOST=0.0.0.0` usable.
    */
   const originAllowed = (req) => {
     const origin = req.headers.origin ?? ""
     if (!origin) return false // a plain form or a non-browser client
-    if (pageOrigin && origin === pageOrigin) return true
-    // the loopback spellings a browser may use for the same socket
-    const port = server.address()?.port
-    if (port) {
-      if (origin === `http://127.0.0.1:${port}`) return true
-      if (origin === `http://localhost:${port}`) return true
-      if (origin === `http://[::1]:${port}`) return true
-    }
-    if (base) {
-      try {
-        if (origin === new URL(base).origin) return true
-      } catch {
-        /* a bare host in the env var: nothing to compare */
-      }
-    }
-    return false
+    return boundOrigins.has(origin)
   }
 
   const listen = (port) => {
@@ -420,6 +412,36 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
         server.removeListener("error", onErr)
         const actual = server.address().port
         pageOrigin = `http://${host.includes(":") ? `[${host}]` : host}:${actual}`
+
+        // Everything this socket answers on. `localhost` and `127.0.0.1` are the
+        // two spellings a browser may use for the loopback; a wildcard bind also
+        // answers on each of this machine's own addresses, so those are accepted
+        // too — otherwise `ORCATERM_CAPTURE_HOST=0.0.0.0` would hand out a page
+        // whose own POST gets refused.
+        boundOrigins.add(`http://127.0.0.1:${actual}`)
+        boundOrigins.add(`http://localhost:${actual}`)
+        boundOrigins.add(`http://[::1]:${actual}`)
+        if (host === "0.0.0.0" || host === "::") {
+          boundOrigins.add(pageOrigin)
+          for (const list of Object.values(os.networkInterfaces())) {
+            for (const nic of list ?? []) {
+              const addr = nic?.address
+              if (!addr) continue
+              if (nic.family === "IPv4") boundOrigins.add(`http://${addr}:${actual}`)
+              else if (nic.family === "IPv6") boundOrigins.add(`http://[${addr}]:${actual}`)
+            }
+          }
+        } else {
+          boundOrigins.add(pageOrigin)
+        }
+        if (base) {
+          try {
+            boundOrigins.add(new URL(base).origin)
+          } catch {
+            /* a bare host in the env var: nothing to compare */
+          }
+        }
+
         // The socket must not keep the process alive on its own, and neither
         // should the timer: `close()` runs when the sign-in finishes or times
         // out, and `unref` means a leaked capture cannot hold the host open.

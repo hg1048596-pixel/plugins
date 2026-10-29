@@ -212,6 +212,47 @@ test("errorStatus penalises the pacer it is given, and only that one", () => {
 })
 
 // The minor points: the local sign-in page must not accept a code from anyone else.
+test("/cb accepts the machine's own addresses when bound to a wildcard", async () => {
+  // `ORCATERM_CAPTURE_HOST=0.0.0.0` is documented as a way to reach the page from
+  // elsewhere. It has to keep working, or the knob hands out a page whose own POST
+  // is refused.
+  const saved = process.env.ORCATERM_CAPTURE_HOST
+  process.env.ORCATERM_CAPTURE_HOST = "0.0.0.0"
+  const os = await import("node:os")
+  const cap = _internal.createLocalCapture({
+    appid: "wxtest",
+    redirectUri: "https://orcaterm.com/oauth/wechat/bridge",
+    state: "state-abc",
+    timeoutMs: 5000,
+  })
+  try {
+    const page = await cap.ready
+    const port = new URL(page).port
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .find((n) => n && n.family === "IPv4" && !n.internal)?.address
+    if (lan) {
+      const res = await fetch(`http://127.0.0.1:${port}/cb`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: `http://${lan}:${port}` },
+        body: JSON.stringify({ code: "LAN_CODE", state: "state-abc" }),
+      })
+      expect((await res.json()).ok).toBe(true)
+    }
+    // and a hostname is still refused, which is what rebinding would use
+    const forged = await fetch(`http://127.0.0.1:${port}/cb`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://evil.example" },
+      body: JSON.stringify({ code: "X", state: "state-abc" }),
+    })
+    expect(forged.status).toBe(403)
+  } finally {
+    cap.close()
+    if (saved === undefined) delete process.env.ORCATERM_CAPTURE_HOST
+    else process.env.ORCATERM_CAPTURE_HOST = saved
+  }
+})
+
 test("/cb refuses a rebinding page that matches Origin with its own Host", async () => {
   // The state is in the page's HTML, so reading it is not the hard part. The
   // check has to be against an origin the request cannot supply: comparing
