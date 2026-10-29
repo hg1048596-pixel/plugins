@@ -159,7 +159,7 @@ export function looksLikeAccessToken(s) {
   return /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(String(s ?? "").trim())
 }
 
-const PAGE = ({ appid, redirectUri, state }) => `<!doctype html>
+const PAGE = ({ appid, redirectUri, state, bridgeOrigin }) => `<!doctype html>
 <html lang="zh"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OrcaTerm · WeChat sign-in</title>
@@ -201,7 +201,9 @@ const PAGE = ({ appid, redirectUri, state }) => `<!doctype html>
 
   // Only the bridge page this sign-in is talking to may answer it. Without the
   // origin check any window that has a handle on this one could post a code.
-  const TRUSTED_ORIGIN = 'https://orcaterm.com';
+  // Taken from the redirect_uri OrcaTerm itself issued, so a move of the bridge
+  // to another host does not silently stall every scan.
+  const TRUSTED_ORIGIN = ${JSON.stringify(bridgeOrigin)};
 
   window.addEventListener('message', async (e) => {
     if (e.origin !== TRUSTED_ORIGIN) return;
@@ -212,7 +214,10 @@ const PAGE = ({ appid, redirectUri, state }) => `<!doctype html>
     // compares against a value only this page knows.
     if (d.state && d.state !== STATE) return;
     try {
-      const r = await fetch('/cb', {
+      // Relative to this page, not root-absolute: with ORCATERM_CAPTURE_BASE set
+      // to a URL with a path, '/cb' would leave the path and never reach this
+      // server.
+      const r = await fetch(new URL('cb', location.href), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code: d.code, state: d.state || STATE, error: d.error }),
@@ -233,14 +238,28 @@ const PAGE = ({ appid, redirectUri, state }) => `<!doctype html>
  * {code, state} once the scan comes back.
  */
 export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 300000 }) {
+  // The origin the bridge page will answer from, taken from the redirect_uri
+  // OrcaTerm issued rather than hardcoded.
+  let bridgeOrigin = "https://orcaterm.com"
+  try {
+    bridgeOrigin = new URL(redirectUri).origin
+  } catch {
+    /* keep the default */
+  }
+
   let settleWait
   let failWait
   let resolveReady
+  let rejectReady
   let settled = false
 
-  const ready = new Promise((r) => {
-    resolveReady = r
+  // `ready` can fail: a bind error other than a busy port has to reach the
+  // caller as a failed sign-in rather than leave it awaiting forever.
+  const ready = new Promise((res, rej) => {
+    resolveReady = res
+    rejectReady = rej
   })
+  ready.catch(() => {})
   const wait = new Promise((res, rej) => {
     settleWait = res
     failWait = rej
@@ -248,11 +267,28 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
   wait.catch(() => {})
 
   const server = http.createServer((req, res) => {
+    // One bad request must not take the host process down: this handler runs in
+    // magpie's own event loop, where a throw is an uncaught exception.
+    req.on("error", () => {})
+    res.on("error", () => {})
+    try {
+      handle(req, res)
+    } catch (err) {
+      try {
+        res.writeHead(500, { "content-type": "application/json" })
+        res.end(JSON.stringify({ ok: false, error: String(err?.message ?? err) }))
+      } catch {
+        /* the response was already gone */
+      }
+    }
+  })
+
+  const handle = (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1")
 
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/login")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-      res.end(PAGE({ appid, redirectUri, state }))
+      res.end(PAGE({ appid, redirectUri, state, bridgeOrigin }))
       return
     }
 
@@ -262,8 +298,7 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
       // sign-in with a credential we did not ask for. The page is served from
       // this origin, so a same-origin POST carries it; anything else — including
       // a request with no Origin at all — is refused.
-      const origin = req.headers.origin ?? ""
-      if (!allowedOrigins().includes(origin)) {
+      if (!originAllowed(req)) {
         res.writeHead(403, { "content-type": "application/json" })
         res.end(JSON.stringify({ ok: false, error: "origin not allowed" }))
         return
@@ -295,7 +330,7 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
     }
 
     res.writeHead(404).end()
-  })
+  }
 
   function close() {
     clearTimeout(timer)
@@ -318,45 +353,95 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
   const host = process.env.ORCATERM_CAPTURE_HOST || "127.0.0.1"
 
   // The origin the page is actually served from, known once the socket is bound.
-  // A reverse proxy in front of it (ORCATERM_CAPTURE_BASE) changes what the
-  // browser sends, so both are accepted — nothing else is.
   let pageOrigin = ""
 
-  const allowedOrigins = () => {
-    const out = []
-    if (pageOrigin) out.push(pageOrigin)
+  /**
+   * Which `Origin`s a POST to /cb may carry.
+   *
+   * Only the page this server actually serves — `pageOrigin`, which is built from
+   * the address the socket is bound to — plus the proxy's origin when
+   * `ORCATERM_CAPTURE_BASE` points at one.
+   *
+   * `Origin` is deliberately **not** compared with the request's `Host`: both
+   * come from the request, so a DNS-rebinding page (`Host: evil.example`,
+   * `Origin: http://evil.example`, resolving to 127.0.0.1) satisfies that
+   * comparison and could settle the sign-in with a code of its own. The state is
+   * in the page's HTML, so it is not a secret against anyone who can load the
+   * page — which is why the origin has to be checked against a value the request
+   * cannot supply.
+   */
+  const originAllowed = (req) => {
+    const origin = req.headers.origin ?? ""
+    if (!origin) return false // a plain form or a non-browser client
+    if (pageOrigin && origin === pageOrigin) return true
+    // the loopback spellings a browser may use for the same socket
+    const port = server.address()?.port
+    if (port) {
+      if (origin === `http://127.0.0.1:${port}`) return true
+      if (origin === `http://localhost:${port}`) return true
+      if (origin === `http://[::1]:${port}`) return true
+    }
     if (base) {
       try {
-        out.push(new URL(base).origin)
+        if (origin === new URL(base).origin) return true
       } catch {
-        /* a bare host: no origin to compare */
+        /* a bare host in the env var: nothing to compare */
       }
     }
-    return out
+    return false
   }
 
   const listen = (port) => {
     const onErr = (e) => {
-      // the fixed port may already be taken: any free one is fine, the URL tells
-      // the user where to go
-      if (e?.code === "EADDRINUSE" && port !== 0) {
+      // A busy fixed port is fine — any free one will do, the URL tells the user
+      // where to go. But when a base URL is configured the page is reached
+      // through that proxy, which cannot know a random port, so falling back
+      // would hand out a URL that points at whatever else owns 4080.
+      if (e?.code === "EADDRINUSE" && port !== 0 && !base) {
         listen(0)
         return
       }
+      // Any other bind error must fail the sign-in, not leave `ready` pending:
+      // `authorize()` awaits it, so a pending promise is a hung login with no
+      // explanation.
       if (!settled) {
         settled = true
         clearTimeout(timer)
+        rejectReady(e)
         failWait(e)
       }
     }
     server.once("error", onErr)
-    server.listen(port, host, () => {
+    // `listen()` validates the port synchronously and throws on a bad one, before
+    // the error handler can fire — so a bad ORCATERM_CAPTURE_PORT would escape
+    // `createLocalCapture` and leave the 300 s timer armed.
+    try {
+      server.listen(port, host, () => {
+        server.removeListener("error", onErr)
+        const actual = server.address().port
+        pageOrigin = `http://${host.includes(":") ? `[${host}]` : host}:${actual}`
+        // The socket must not keep the process alive on its own, and neither
+        // should the timer: `close()` runs when the sign-in finishes or times
+        // out, and `unref` means a leaked capture cannot hold the host open.
+        server.unref?.()
+        timer.unref?.()
+        if (base) {
+          // behind a proxy the page is served at the base URL; keep it as given
+          resolveReady(`${base.replace(/\/+$/, "")}/login`)
+        } else {
+          const shown = host === "0.0.0.0" ? "127.0.0.1" : host
+          resolveReady(`http://${shown}:${actual}/login`)
+        }
+      })
+    } catch (err) {
       server.removeListener("error", onErr)
-      const actual = server.address().port
-      const shown = host === "0.0.0.0" ? "127.0.0.1" : host
-      pageOrigin = `http://${shown}:${actual}`
-      resolveReady(`${base || pageOrigin}/login`)
-    })
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        rejectReady(err)
+        failWait(err)
+      }
+    }
   }
 
   listen(wantPort)

@@ -49,7 +49,7 @@ fallback for when scanning is not possible, and it is the one that carries the r
 | `res.wx.qq.com` | QR sign-in page | nothing — it serves WeChat's `wxLogin.js` |
 | `open.weixin.qq.com` | the QR widget's iframe | the `appid`, `redirect_uri` and `state` OrcaTerm issued |
 
-Four of those are Tencent's own; the last two belong to WeChat, and only the QR sign-in page loads
+Three of those are Tencent's own; the last two belong to WeChat, and only the QR sign-in page loads
 them — a cookie sign-in never does. Nothing goes anywhere else. The plugin does not share, resell or
 pool quota, and it makes no attempt to evade anti-abuse checks. None of that changes the paragraph
 above.
@@ -113,8 +113,9 @@ key's shape.
 magpie plugin login orcaterm     # choose the first entry
 ```
 
-A page opens at <http://127.0.0.1:4080/login> with a WeChat QR code. Scan it and the plugin carries
-on by itself — there is no URL to copy.
+magpie opens a page with a WeChat QR code on it — by default
+<http://127.0.0.1:4080/login>, or another port if 4080 is taken, in which case the URL it shows is
+the real one. Scan it and the plugin carries on by itself; there is no URL to copy.
 
 How the callback is captured: the page embeds WeChat's `qrconnect` widget through the official
 `wxLogin.js` with `self_redirect: true`. After a scan, the return to
@@ -130,6 +131,9 @@ ssh -L 4080:127.0.0.1:4080 <server>
 ```
 
 `ORCATERM_CAPTURE_PORT`, `ORCATERM_CAPTURE_HOST` and `ORCATERM_CAPTURE_BASE` override the address.
+`ORCATERM_CAPTURE_HOST` is what the socket binds to, and it defaults to the loopback; setting it to
+`0.0.0.0` means anyone who can reach the machine can load the sign-in page, and the `state` it carries
+is in that page's HTML — so only do that behind something that restricts who can connect.
 
 The token is renewed before it expires through `OAuthRefreshToken`, so a normal session never asks
 you to scan again.
@@ -232,7 +236,7 @@ Two consequences worth knowing:
 - **No tool calls.** The assistant runs its own tools server-side and never emits `tool_calls`, so
   the models are declared with `tool_call: false`. A client's tool calls and their results are
   written into the conversation as text so nothing is lost, but the agent does the calling itself.
-- **No images.** `image_url` parts become a `[图片]` note.
+- **No images.** `image_url` parts become an `[image]` note.
 
 Token counts are not reported: the upstream returns none, and an estimate passed off as real usage
 would make both cost and context accounting wrong. A caller that asks for `include_usage` gets the
@@ -251,7 +255,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-51 tests over seven files. No test signs in or reaches the network — `fetch` is replaced in each.
+65 tests over seven files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |
@@ -261,7 +265,7 @@ bun test
 | `chunks.test.mjs` | frames that look cumulative but aren't; a frame split across chunks; a reset mid-stream; cancelling reaching the upstream |
 | `peek.test.mjs` | a refusal read from the head of the stream becoming 429/401/502, and a real answer surviving the peek |
 | `usage.test.mjs` | which `usageStats` row is the AI allowance |
-| `review.test.mjs` | the cases the first review turned up: an `{"action": …}` in the middle of a reply is not the envelope; the JSON 429 is a 429; pacers are per account; only nine models are listed |
+| `review.test.mjs` | the cases the reviews turned up: a reply containing `{"action": …}` is not truncated (including one character at a time, and one that ends mid-envelope); the JSON 429 is a 429; pacers are per account; only nine models are listed; a chat makes exactly one request and it is not `/conversation`; and `/cb` refuses a foreign `Origin`, a rebinding page, and a `state` it did not issue |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
 
@@ -304,4 +308,5 @@ GLM、Kimi。provider id：`orcaterm`。
 
 ## License
 
-MIT — see [LICENSE](../../LICENSE).
+MIT. The licence text is at the repository root, `LICENSE` — it is not part of the published
+package, so this README does not link to it from there.

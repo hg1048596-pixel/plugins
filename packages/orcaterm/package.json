@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": ["index.mjs", "wechat.mjs", "README.md"],
+  "files": ["index.mjs", "wechat.mjs", "README.md", "LICENSE"],
   "keywords": ["opencode", "opencode-plugin", "magpie", "orcaterm", "tencent"],
   "license": "MIT",
   "repository": {

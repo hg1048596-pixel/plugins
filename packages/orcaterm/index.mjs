@@ -272,7 +272,7 @@ function createPacer({ limit = 10, windowMs = 60000, useEnv = true } = {}) {
         const now = Date.now()
         prune(now)
         if (now < blockedUntil) {
-          await sleep(Math.min(blockedUntil - now, 5000))
+          await sleep(Math.min(blockedUntil - now, 5000), signal)
           continue
         }
         if (sent.length < budget()) {
@@ -281,7 +281,7 @@ function createPacer({ limit = 10, windowMs = 60000, useEnv = true } = {}) {
         }
         // the oldest must fall out of the window before another may go
         const waitFor = Math.max(50, windowMs - (now - sent[0]) + 5)
-        await sleep(Math.min(waitFor, 5000))
+        await sleep(Math.min(waitFor, 5000), signal)
       }
     },
     /** A 429 came back: hold everything for a window rather than retry into it. */
@@ -315,29 +315,42 @@ function pacerFor(auth) {
   const key = fingerprint(auth)
   let p = pacers.get(key)
   if (!p) {
-    // bound the map the way the session map is bounded: signing in again and
-    // again must not grow it without limit
-    if (pacers.size > 64) pacers.clear()
+    // Bound the map the way the session map is bounded. Evict the oldest entry
+    // rather than clearing: `clear()` would also drop live cool-downs, handing
+    // every account a fresh budget the moment the map filled up.
+    if (pacers.size >= 64) {
+      const oldest = pacers.keys().next().value
+      if (oldest !== undefined) pacers.delete(oldest)
+    }
     p = createPacer()
     pacers.set(key, p)
   }
   return p
 }
 
-/** Wait `ms`, but stop early if the caller goes away. */
+/**
+ * Wait `ms`, but stop early if the caller goes away.
+ *
+ * The abort listener is removed when the timeout wins, so a long-lived signal
+ * does not accumulate listeners across waits; and an already-aborted signal
+ * resolves at once instead of waiting the full time.
+ */
 function sleep(ms, signal) {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms)
-    if (signal?.addEventListener) {
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(t)
-          resolve()
-        },
-        { once: true },
-      )
+    if (signal?.aborted) {
+      resolve()
+      return
     }
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      signal?.removeEventListener?.("abort", finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, ms)
+    signal?.addEventListener?.("abort", finish, { once: true })
   })
 }
 
@@ -446,10 +459,15 @@ function cookieHeader(auth) {
 }
 
 function fingerprint(auth) {
-  // account identity: a WeChat access token carries a userId; a console session
-  // is uin + the first 12 characters of skey
+  // Account identity: a WeChat access token carries a userId; a console session
+  // is uin + the first 12 characters of skey.
+  //
+  // The fallback is deliberately a constant, not a slice of the token: a token
+  // without a `userId` claim is replaced on every renewal, and keying on its
+  // tail would hand that account a brand-new pacer — and a brand-new budget —
+  // every two hours. One shared fallback key is the conservative choice.
   const bearer = bearerOf(auth)
-  if (bearer) return `wechat:${readTokenClaims(bearer).userId || bearer.slice(-12)}`
+  if (bearer) return `wechat:${readTokenClaims(bearer).userId || "unknown"}`
   const t = auth?.ticket
   const uin = t?.uin || t?.p_uin || ""
   return `${uin}:${String(t?.skey ?? "").slice(0, 12)}`
@@ -843,9 +861,13 @@ function unwrapAnswer(text) {
     // still arriving, or the model wrote braces that don't parse: leave it be
     return raw
   }
-  if (!obj || typeof obj.action !== "string") return raw
-  if (typeof obj.taskCompletion === "string") return obj.taskCompletion
-  return raw
+  // Key lookup is case-insensitive, the same way `isActionEnvelope` treats the
+  // verb: the assistant writes its own JSON and does not always keep the case.
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return raw
+  const action = obj.action ?? obj.Action
+  if (typeof action !== "string") return raw
+  const completion = obj.taskCompletion ?? obj.TaskCompletion
+  return typeof completion === "string" ? completion : raw
 }
 
 /** JSON string escapes, for reading the envelope's answer as it arrives. */
@@ -856,7 +878,7 @@ const JSON_ESCAPES = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n"
  * prose is still recognised. Big enough for `{"action": …` to appear, small
  * enough that a reply starting to stream is not visibly delayed.
  */
-const ENVELOPE_TAIL = 24
+const ENVELOPE_TAIL = 48
 
 /**
  * The answer inside the assistant's action envelope, for a reply that is still
@@ -882,13 +904,13 @@ const ENVELOPE_TAIL = 24
 
 /** The `"taskCompletion"` value's opening quote in `s`, or -1 while it hasn't shown up. */
 function answerStart(s) {
-  const i = s.indexOf('"taskCompletion"')
-  if (i < 0) return -1
-  let j = i + '"taskCompletion"'.length
-  while (j < s.length && /\s/.test(s[j])) j += 1
-  if (s[j] !== ":") return -1
-  j += 1
-  while (j < s.length && /\s/.test(s[j])) j += 1
+  // The field name, matched the way the client matches it — case-insensitively —
+  // and with only the small amount of whitespace the assistant actually emits.
+  // It is checked only after the reply has been established to be an envelope,
+  // so a reply that merely quotes the field name is never read as one.
+  const m = /"taskCompletion"\s{0,8}:\s{0,8}/i.exec(s)
+  if (!m) return -1
+  const j = m.index + m[0].length
   if (s[j] !== '"') return -1
   return j + 1
 }
@@ -940,7 +962,8 @@ function couldBeEnvelope(s) {
   const rest = t.slice(1).replace(/^\s+/, "")
   if (!rest) return true
   if (rest.startsWith('"')) {
-    const key = rest.slice(1).replace(/^\s+/, "")
+    // compared lowercased, to match how `isActionEnvelope` reads the verb
+    const key = rest.slice(1).replace(/^\s+/, "").toLowerCase()
     if (!key) return true
     if (key.startsWith("action")) return true
     return "action".slice(0, key.length) === key
@@ -1051,31 +1074,41 @@ function createAnswerExtractor() {
   let sent = 0
   /** The answer can grow no more. */
   let closed = false
+  /** Nothing more will arrive: stop holding a tail back. */
+  let final = false
 
-  /** What the answer should be, given everything received so far. */
+  /**
+   * What the answer should be, given everything received so far.
+   *
+   * Order matters. A trailing envelope is decided first, then a trailing object
+   * that is still arriving, and only then the question of whether the *whole*
+   * reply is an envelope. That last test is `couldBeEnvelope(raw)` on the reply
+   * itself — never `answerStart(raw)` on its own, which is what used to cut a
+   * reply that merely mentions the field name.
+   */
   const answerSoFar = () => {
     const appended = appendedEnvelopeAt(raw)
     if (appended > 0) return raw.slice(0, appended)
+
     // A trailing object is still arriving and could be the envelope: hold from
     // there rather than show `{"action":` as prose. Once it parses and turns out
     // not to be one, this stops matching and the text flows again.
-    const pending = appendedEnvelopePendingAt(raw)
-    if (pending > 0) return raw.slice(0, pending)
-    const start = answerStart(raw)
-    if (start >= 0) {
-      // The envelope's answer has begun. If prose came first, the prose is the
-      // answer and the envelope is bookkeeping — that happens when the fence
-      // opening sits between them.
-      const lead = raw.slice(0, start).replace(/```(?:json)?\s*$/i, "").trim()
-      if (lead && !couldBeEnvelope(lead)) return raw.slice(0, start).replace(/```(?:json)?\s*$/i, "")
-      return decodeJsonString(raw.slice(start)).text
+    if (!final) {
+      const pending = appendedEnvelopePendingAt(raw)
+      if (pending > 0) return raw.slice(0, pending)
     }
-    // No envelope in the text yet. While it could still be one (the opening is
-    // only half arrived) nothing may be shown, or `{"action"` would go out as
-    // prose; once that's ruled out the reply is plain and its own answer.
-    if (couldBeEnvelope(raw)) return ""
-    // no envelope at all: the reply is the answer, minus a short tail held
-    // back in case an envelope is still to come
+
+    // The reply itself may be the envelope (optionally fenced). Only then is its
+    // answer read out of a field.
+    if (couldBeEnvelope(raw)) {
+      const start = answerStart(raw)
+      if (start >= 0) return decodeJsonString(raw.slice(start)).text
+      // still arriving, or an envelope whose answer field is not a string
+      return final ? stripTrailingEnvelope(raw) : ""
+    }
+
+    // no envelope at all: the reply is its own answer
+    if (final) return stripTrailingEnvelope(raw)
     return raw.slice(0, Math.max(0, raw.length - ENVELOPE_TAIL))
   }
 
@@ -1092,42 +1125,22 @@ function createAnswerExtractor() {
     push(delta) {
       if (!delta || closed) return ""
       raw += delta
-
-      // prose followed by an envelope: the envelope ends the answer
-      if (appendedEnvelopeAt(raw) > 0) {
-        const out = emit()
-        closed = true
-        return out
-      }
-
-      // an envelope whose answer has finished
-      const start = answerStart(raw)
-      if (start >= 0 && decodeJsonString(raw.slice(start)).ended) {
-        const out = emit()
-        closed = true
-        return out
-      }
-
-      // Still undecided (could be the start of an envelope): hold it. Once it
-      // can't be one, `answerSoFar` is plain prose and this passes it on.
+      // Deliberately never closes here. A complete envelope-shaped object is
+      // only "trailing" as far as what has arrived: if more text follows it, it
+      // was an example inside the answer, not the envelope, and closing early
+      // dropped everything after it. Cutting the *output* is enough — sending
+      // stops at the object — and `finish()` is what ends the stream.
       return emit()
     },
     /** Whatever is held back when the stream ends. */
     finish() {
       if (closed) return ""
+      // Nothing more is coming: judge the whole text as it stands, without
+      // holding a tail back for an envelope that will never arrive.
+      final = true
+      const out = emit()
       closed = true
-      // Nothing more is coming, so a short reply can't be waiting on a tail:
-      // judge the whole text as it stands.
-      if (!isEnvelope(raw)) {
-        const want = stripTrailingEnvelope(raw)
-        if (want.length > sent) {
-          const out = want.slice(sent)
-          sent = want.length
-          return out
-        }
-        return ""
-      }
-      return emit()
+      return out
     },
   }
 }
@@ -1162,7 +1175,7 @@ function isEnvelope(s) {
 const ERROR_MAP = [
   // monthly quota gone: another account is worth trying, so mark it 429 and
   // magpie moves to the next one
-  { re: /quota|exceeded|额度|次数已用完|余额不足/i, status: 429, type: "rate_limit_error" },
+  { re: /quota|额度|次数已用完|余额不足|allowance|insufficient/i, status: 429, type: "rate_limit_error" },
   // rate limited: the same, but it has to wait a while
   { re: /rate.?limit|too many|频繁|限流/i, status: 429, type: "rate_limit_error" },
   // sign-in problem: mark the account as needing to sign in again
@@ -1779,6 +1792,11 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
 
     auth: {
       provider: PROVIDER,
+      // Also declared on the hook, not only in package.json: siblings that get
+      // this right (codearts, zcode) do both, and this is what the README's
+      // "maxConcurrency is 1" describes. OrcaTerm's budget is per account and
+      // shared with its own desktop client, so one in flight.
+      maxConcurrency: 1,
 
       methods: [
         {
@@ -1814,7 +1832,18 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
               redirectUri: started.redirectUri,
               state: started.state,
             })
-            const pageUrl = await cap.ready
+            // `ready` rejects on a bind error, so a failure here becomes a failed
+            // sign-in with a reason instead of a hang.
+            let pageUrl
+            try {
+              pageUrl = await cap.ready
+            } catch (err) {
+              cap.close()
+              return {
+                type: "failed",
+                error: `Could not start the local sign-in page (${err?.code ?? err?.message ?? err}). You can paste the cookie pair instead.`,
+              }
+            }
 
             return {
               url: pageUrl,
@@ -1989,6 +2018,10 @@ export const OrcaTermAuthPlugin = async ({ client } = {}) => {
 
             if (!res.ok) {
               const info = await classifyUpstreamError(res)
+              // A limit reported by the status line rather than inside the body
+              // has to cool this account's pacer down as well, or the next
+              // request walks straight back into it.
+              if (info.status === 429 || res.status === 429) pacer.penalize()
               // Only a confirmed sign-in problem answers 401 (magpie marks the
               // account and stops dispatching on a 401 by default); quota gone /
               // risk control / 5xx all answer 502, so magpie fails over instead

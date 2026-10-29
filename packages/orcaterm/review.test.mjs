@@ -54,15 +54,87 @@ test("a trailing action object that is not the assistant's envelope is kept", ()
 })
 
 test("a reducer the user asked for is not mistaken for an envelope", () => {
-  // `content` is one of the fields the client reads a reply from, so a verb the
-  // envelope never uses must not be enough to cut the snippet
-  const snippet = '你的 reducer 写成这样：\n{"action": "SAVE", "content": "hello"}'
+  // `content` is a field the client reads a reply from, so a verb the envelope
+  // never uses must not be enough to cut the snippet
+  const snippet = 'Write the reducer like this:\n{"action": "SAVE", "content": "hello"}'
   expect(_internal.stripTrailingEnvelope(snippet)).toBe(snippet)
-
   const ex = _internal.createAnswerExtractor()
-  let out = ex.push(snippet)
-  out += ex.finish()
+  const out = ex.push(snippet) + ex.finish()
   expect(out).toBe(snippet)
+})
+
+test("a reply that merely mentions the field name is not cut", () => {
+  // The extractor used to close as soon as `"taskCompletion": "` appeared
+  // anywhere, so a reply quoting the field was truncated and reported as a
+  // normal stop.
+  const mentioning = 'Quote the field like this: "taskCompletion": "the answer". That is all.'
+  const ex = _internal.createAnswerExtractor()
+  let out = ex.push(mentioning)
+  out += ex.finish()
+  expect(out).toBe(mentioning)
+})
+
+test("an inline envelope inside a longer answer is not cut", () => {
+  const inline = 'Example: {"action": "completion", "taskCompletion": "x"} then done.'
+  // both delivery shapes, because the per-character one used to close the stream
+  // the instant the object completed and drop the rest
+  const once = _internal.createAnswerExtractor()
+  expect(once.push(inline) + once.finish()).toBe(inline)
+
+  const perChar = _internal.createAnswerExtractor()
+  let out = ""
+  for (const ch of inline) out += perChar.push(ch)
+  out += perChar.finish()
+  expect(out).toBe(inline)
+})
+
+test("a stream that ends inside the envelope does not splice raw JSON into the answer", () => {
+  // No [DONE]: the upstream died mid-envelope. `sent` counts decoded answer
+  // characters, so comparing it against the raw length used to emit garbage.
+  const partial = '{"action":"completion","taskCompletion":"Hello wor'
+  const ex = _internal.createAnswerExtractor()
+  const out = ex.push(partial) + ex.finish()
+  expect(out).toBe("Hello wor")
+  expect(out).not.toContain("taskCompletion")
+})
+
+test("a capitalised action key is still recognised as the envelope", () => {
+  expect(_internal.unwrapAnswer('{"Action": "completion", "taskCompletion": "Hello"}')).toBe("Hello")
+})
+
+test("a long run of whitespace inside the opening does not leak the envelope", () => {
+  const prose = "Answer text here. "
+  const env = `{${" ".repeat(30)}"action": "completion", "taskCompletion": "hi"}`
+  const ex = _internal.createAnswerExtractor()
+  let out = ex.push(prose) + ex.push(env)
+  out += ex.finish()
+  expect(out).toBe(prose)
+})
+
+test("a context-length error is not mistaken for a rate limit", () => {
+  // `/exceeded/` used to catch this and mark the account, which every account
+  // would hit for the same request.
+  const m = _internal.errorStatus("context length exceeded", null)
+  expect(m.status).toBe(502)
+  // the real quota wording still maps to 429
+  expect(_internal.errorStatus("本月问答次数已用完", null).status).toBe(429)
+})
+
+test("pacing wait honours an aborted signal instead of sleeping it out", async () => {
+  const saved = process.env.ORCATERM_NO_PACE
+  delete process.env.ORCATERM_NO_PACE
+  try {
+    const p = _internal.createPacer({ limit: 1, windowMs: 60000, useEnv: false })
+    await p.wait() // fills the window
+    const ctrl = new AbortController()
+    const t0 = Date.now()
+    const waiting = p.wait(ctrl.signal)
+    setTimeout(() => ctrl.abort(), 50)
+    await waiting
+    expect(Date.now() - t0).toBeLessThan(1500)
+  } finally {
+    if (saved !== undefined) process.env.ORCATERM_NO_PACE = saved
+  }
 })
 
 test("an unrecognised verb that still carries taskCompletion is treated as the envelope", () => {
@@ -140,6 +212,33 @@ test("errorStatus penalises the pacer it is given, and only that one", () => {
 })
 
 // The minor points: the local sign-in page must not accept a code from anyone else.
+test("/cb refuses a rebinding page that matches Origin with its own Host", async () => {
+  // The state is in the page's HTML, so reading it is not the hard part. The
+  // check has to be against an origin the request cannot supply: comparing
+  // Origin with the request's own Host is a tautology a rebinding page satisfies.
+  const cap = _internal.createLocalCapture({
+    appid: "wxtest",
+    redirectUri: "https://orcaterm.com/oauth/wechat/bridge",
+    state: "state-abc",
+    timeoutMs: 5000,
+  })
+  try {
+    const page = await cap.ready
+    const html = await (await fetch(page)).text()
+    const state = /const STATE = "([^"]+)"/.exec(html)?.[1] ?? ""
+    expect(state).toBe("state-abc")
+    const res = await fetch(new URL("/cb", page), {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://evil.example", host: "evil.example" },
+      body: JSON.stringify({ code: "ATTACKER_CODE", state }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json()).ok).toBe(false)
+  } finally {
+    cap.close()
+  }
+})
+
 test("/cb refuses a POST from another origin", async () => {
   const cap = _internal.createLocalCapture({
     appid: "wxtest",

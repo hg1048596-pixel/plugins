@@ -94,9 +94,25 @@ test("a long answer is not truncated by the peek", async () => {
   frames.push("data: [DONE]\n\n")
   const res = await ask(bodyOf(frames))
   expect(res.status).toBe(200)
+  // Compare the deltas joined, not the raw body: where a chunk boundary falls
+  // is the plugin's business, and asserting on the raw JSON made this fail the
+  // moment the extractor's hold-back changed size.
   const text = await res.text()
-  expect(text).toContain("w0 ")
-  expect(text).toContain("w199 ")
+  let out = ""
+  for (const line of text.split("\n")) {
+    const t = line.trim()
+    if (!t.startsWith("data:")) continue
+    const payload = t.slice(5).trim()
+    if (payload === "[DONE]") continue
+    try {
+      const d = JSON.parse(payload).choices?.[0]?.delta
+      if (d?.content) out += d.content
+    } catch {
+      /* not a chunk */
+    }
+  }
+  const expected = Array.from({ length: 200 }, (_, i) => `w${i} `).join("")
+  expect(out).toBe(expected)
 })
 
 // The OpenAI error body carries both a class and a code, and they are not
