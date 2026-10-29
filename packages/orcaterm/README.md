@@ -202,6 +202,13 @@ puts this account's pacer into its cool-down.
 A refusal that arrives after the answer has started is delivered as a stream error rather than as
 text, so it still counts as a failure.
 
+### Rate limit
+
+Ten chats a minute per account. The budget is the account's, not the plugin's, so it paces itself:
+a sliding window holds a request until there is room, a 429 puts **that account's** pacer into a
+cool-down rather than every account's, and `maxConcurrency` is 1. `ORCATERM_CHAT_RPM` lowers the
+budget to leave room for the desktop client; `ORCATERM_NO_PACE=1` turns pacing off.
+
 ## Requests
 
 magpie's gateway turns whatever protocol the agent speaks into a Chat Completions body and hands it
