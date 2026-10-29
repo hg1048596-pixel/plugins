@@ -33,7 +33,7 @@ test("the AI allowance is reported as used out of its limit", async () => {
     ]),
   )
   expect(u.windows).toHaveLength(1)
-  expect(u.windows[0].name).toBe("AI 问答")
+  expect(u.windows[0].name).toBe("AI Q&A")
   expect(u.windows[0].amount).toBe(370)
   expect(u.windows[0].limit).toBe(1000)
   expect(u.windows[0].used).toBe(37)

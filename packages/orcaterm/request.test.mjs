@@ -21,14 +21,14 @@ test("system text is carried as a prefix, the last user turn as the input", () =
     { role: "user", content: "second" },
   ])
   expect(up.conversationId).toBe("cid-1")
-  expect(up.input.input.startsWith("[系统指令")).toBe(true)
+  expect(up.input.input.startsWith("[system instructions")).toBe(true)
   expect(up.input.input.endsWith("second")).toBe(true)
   // The earlier turns travel as a transcript in the text: magpie gives every
   // request a fresh sessionID, so nothing on the wire can rely on server-side
   // conversation state (measured 2026-10-27).
-  expect(up.input.input).toContain("[此前的对话]")
-  expect(up.input.input).toContain("用户：first")
-  expect(up.input.input).toContain("助手：first answer")
+  expect(up.input.input).toContain("[earlier in this conversation]")
+  expect(up.input.input).toContain("user: first")
+  expect(up.input.input).toContain("assistant: first answer")
   // and nothing goes up as historyMessages
   expect(up.input.historyMessages).toEqual([])
   expect(up.input.type).toBe("start")
@@ -48,7 +48,7 @@ test("tool calls and their results become text, nothing is lost", () => {
   expect(all).toContain("get_weather")
   expect(all).toContain("sunny 30C")
   // the tool result is the last turn, so it is what gets asked
-  expect(up.input.input).toContain("工具结果")
+  expect(up.input.input).toContain("tool result")
 })
 
 // An empty input is answered with a 400 by the assistant, so an empty
@@ -69,7 +69,7 @@ test("image parts are noted, text parts kept", () => {
     },
   ])
   expect(up.input.input).toContain("look")
-  expect(up.input.input).toContain("[图片]")
+  expect(up.input.input).toContain("[image]")
 })
 
 // A model id magpie may pass with its provider prefix, in any case, with

@@ -199,14 +199,23 @@ const PAGE = ({ appid, redirectUri, state }) => `<!doctype html>
     d.style.display = 'flex';
   }
 
+  // Only the bridge page this sign-in is talking to may answer it. Without the
+  // origin check any window that has a handle on this one could post a code.
+  const TRUSTED_ORIGIN = 'https://orcaterm.com';
+
   window.addEventListener('message', async (e) => {
+    if (e.origin !== TRUSTED_ORIGIN) return;
     const d = e.data;
     if (!d || d.type !== 'wechat-oauth-callback') return;
+    // If the bridge repeats the state, it must be the one this page issued. When
+    // it does not carry one, our own copy is used below, so the server still
+    // compares against a value only this page knows.
+    if (d.state && d.state !== STATE) return;
     try {
       const r = await fetch('/cb', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code: d.code, state: d.state, error: d.error }),
+        body: JSON.stringify({ code: d.code, state: d.state || STATE, error: d.error }),
       });
       const j = await r.json();
       done(j.ok ? 'Scanned — signing in… (you can close this page once it finishes)'
@@ -248,6 +257,17 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
     }
 
     if (req.method === "POST" && url.pathname === "/cb") {
+      // Only our own page may hand over a code. Any site the user has open could
+      // otherwise POST its own code here while the page waits, finishing the
+      // sign-in with a credential we did not ask for. The page is served from
+      // this origin, so a same-origin POST carries it; anything else — including
+      // a request with no Origin at all — is refused.
+      const origin = req.headers.origin ?? ""
+      if (!allowedOrigins().includes(origin)) {
+        res.writeHead(403, { "content-type": "application/json" })
+        res.end(JSON.stringify({ ok: false, error: "origin not allowed" }))
+        return
+      }
       let raw = ""
       req.on("data", (c) => {
         raw += c
@@ -260,13 +280,16 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
         } catch {
           /* ignore */
         }
-        const ok = Boolean(body.code) && !body.error
+        // the code must belong to the sign-in this page started
+        const stateOk = body.state === state
+        const ok = Boolean(body.code) && !body.error && stateOk
+        const why = body.error || (!stateOk ? "state mismatch" : "no code")
         res.writeHead(200, { "content-type": "application/json" })
-        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, error: body.error || "no code" }))
+        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, error: why }))
         if (!ok || settled) return
         settled = true
         clearTimeout(timer)
-        settleWait({ code: body.code, state: body.state || state })
+        settleWait({ code: body.code, state })
       })
       return
     }
@@ -294,6 +317,24 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
   const base = process.env.ORCATERM_CAPTURE_BASE || ""
   const host = process.env.ORCATERM_CAPTURE_HOST || "127.0.0.1"
 
+  // The origin the page is actually served from, known once the socket is bound.
+  // A reverse proxy in front of it (ORCATERM_CAPTURE_BASE) changes what the
+  // browser sends, so both are accepted — nothing else is.
+  let pageOrigin = ""
+
+  const allowedOrigins = () => {
+    const out = []
+    if (pageOrigin) out.push(pageOrigin)
+    if (base) {
+      try {
+        out.push(new URL(base).origin)
+      } catch {
+        /* a bare host: no origin to compare */
+      }
+    }
+    return out
+  }
+
   const listen = (port) => {
     const onErr = (e) => {
       // the fixed port may already be taken: any free one is fine, the URL tells
@@ -313,7 +354,8 @@ export function createLocalCapture({ appid, redirectUri, state, timeoutMs = 3000
       server.removeListener("error", onErr)
       const actual = server.address().port
       const shown = host === "0.0.0.0" ? "127.0.0.1" : host
-      resolveReady(`${base || `http://${shown}:${actual}`}/login`)
+      pageOrigin = `http://${shown}:${actual}`
+      resolveReady(`${base || pageOrigin}/login`)
     })
   }
 

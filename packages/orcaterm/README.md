@@ -39,10 +39,20 @@ which is confined to this product and expires in two hours — it is not a conso
 reach your servers or billing. Nothing in this section applies to it. The cookie pair is the
 fallback for when scanning is not possible, and it is the one that carries the risk above.
 
-The plugin sends whichever credential it has to two hosts and no others —
-`lightai.cloud.tencent.com` (the assistant) and `api.orcaterm.cloud.tencent.com` (quota). It does not
-share, resell or pool quota, and it makes no attempt to evade anti-abuse checks. None of that changes
-the paragraph above.
+**Every host it touches, and what for:**
+
+| Host | When | What goes there |
+| --- | --- | --- |
+| `lightai.cloud.tencent.com` | every chat | the credential, the message text |
+| `api.orcaterm.cloud.tencent.com` | reading the allowance (cookie sign-ins only) | the credential |
+| `orcaterm.com` | QR sign-in, and renewing its token | the credential, and the OAuth `code` |
+| `res.wx.qq.com` | QR sign-in page | nothing — it serves WeChat's `wxLogin.js` |
+| `open.weixin.qq.com` | the QR widget's iframe | the `appid`, `redirect_uri` and `state` OrcaTerm issued |
+
+Four of those are Tencent's own; the last two belong to WeChat, and only the QR sign-in page loads
+them — a cookie sign-in never does. Nothing goes anywhere else. The plugin does not share, resell or
+pool quota, and it makes no attempt to evade anti-abuse checks. None of that changes the paragraph
+above.
 
 ### Why the terms do not clearly allow it
 
@@ -158,8 +168,9 @@ and `Hunyuan3/<model>` — and that prefix is the whole difference: sent bare, `
 OrcaTerm's own model picker** — `glm-4.7-thinking`, `kimi-k2-thinking`, `kimi-k2.5`,
 `kimi-k2.5-thinking`, `kimi-latest`, `hunyuan-turbos`, `qwen3`, `deepseek-reasoner`. Calling them
 means going around the product's own interface, which the service may treat as abnormal use, and
-**your account may be restricted for it**. They remain resolvable only so that existing configs
-keep working; a new config should use the nine above.
+**your account may be restricted for it**. They are therefore **not offered in `provider.models`**;
+they resolve only so that a config written against them keeps working. A new config should use the
+nine above.
 
 Aliases work too (`deepseek`, `kimi`, `glm`, `hunyuan`), as do the picker labels themselves
 (`Deepseek-V4-Pro`, `GLM-5.3`, `Hy3-preview`…), and the older ids (`deepseek-chat-latest`,
@@ -172,12 +183,17 @@ Context and output limits are estimates: the upstream publishes no window size p
 OrcaTerm answers a refusal **inside the stream** — `data: [ERROR]: …` — with HTTP 200 still on the
 status line. Taken at face value a used-up allowance would look like a normal reply, and magpie
 would neither fail over to another account nor let this one rest. So the plugin reads the head of
-the stream first (`peekAnswer`, as `packages/codearts` does) and answers with a real status:
+the stream first (`peekAnswer`, as `packages/codearts` does) and answers with a real status.
+
+A rate limit is the one refusal that arrives **outside** the stream as well: a burst is answered
+`HTTP 200` with a plain JSON body, `{"code":429,"data":null,"message":"Rate limit exceeded:
+chat-rpm"}`. That path is classified by the same table, so it is a 429 and not a 502 — and it also
+puts this account's pacer into its cool-down.
 
 | Upstream says | Status returned | What magpie does |
 | --- | --- | --- |
 | `quota`, `额度`, `次数已用完`, `余额不足` | **429** | fail over to the next account, rest this one |
-| `rate limit`, `频繁`, `限流` | **429** | same |
+| `rate limit`, `频繁`, `限流`, or the JSON body `{"code":429,…}` | **429** | same, and this account's pacer cools down |
 | `NEED_UIN_AND_SKEY`, `VERIFY_SKEY_UIN_FAILED`, `VERIFY_LOGIN_FAILED`, `VERIFY_USER_FAILED` | **401** + `X-Magpie-Sign-In: expired` | mark the account, stop sending to it |
 | anything else (model unavailable, internal error) | **502** | fail over |
 | the connection dies mid-stream | the stream is errored, `statusCode` 499 (cancelled) or 502 | fail over |
@@ -189,11 +205,20 @@ text, so it still counts as a failure.
 ## Requests
 
 magpie's gateway turns whatever protocol the agent speaks into a Chat Completions body and hands it
-to this plugin's `fetch`. That body becomes one assistant turn — a conversation id, a user id, the
-last user message as `input.content`, the earlier turns as `input.historyMessages`, and any system
-text as a prefix, since the assistant has no system role. The upstream answers in SSE frames whose
-`content` is that frame's addition (and whose `fullContent`, when present, is everything so far);
-those become OpenAI deltas, with reasoning kept in `reasoning_content`.
+to this plugin's `fetch`. That body becomes one assistant turn: a conversation id, a user id, the last
+user message as `input.input`, and any system text as a prefix, since the assistant has no system
+role.
+
+The earlier turns are **not** sent as `historyMessages` — they go in as a plain transcript inside
+`input.input`, and `historyMessages` is always empty. Two reasons, both measured: a history entry's
+kind lives in `type` (`human`/`ai`), not `role`, and the wrong shape fails inside upstream's own
+handler with `[type] is not a function`; and with the right shape the text comes back echoed into the
+answer. A transcript is what the assistant reads reliably — and magpie hands every request a fresh
+session id, so nothing can rely on server-side conversation state anyway.
+
+The upstream answers in SSE frames whose `content` is that frame's addition (and whose
+`fullContent`, when present, is everything so far); those become OpenAI deltas, with reasoning kept in
+`reasoning_content`.
 
 Two consequences worth knowing:
 
@@ -219,7 +244,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-42 tests over six files. No test signs in or reaches the network — `fetch` is replaced in each.
+51 tests over seven files. No test signs in or reaches the network — `fetch` is replaced in each.
 
 | file | what it holds |
 | --- | --- |
@@ -229,6 +254,7 @@ bun test
 | `chunks.test.mjs` | frames that look cumulative but aren't; a frame split across chunks; a reset mid-stream; cancelling reaching the upstream |
 | `peek.test.mjs` | a refusal read from the head of the stream becoming 429/401/502, and a real answer surviving the peek |
 | `usage.test.mjs` | which `usageStats` row is the AI allowance |
+| `review.test.mjs` | the cases the first review turned up: an `{"action": …}` in the middle of a reply is not the envelope; the JSON 429 is a 429; pacers are per account; only nine models are listed |
 
 `chunks.test.mjs`'s cancel case fails if `releaseUpstream()` is removed, so the leak stays fixed.
 
@@ -255,11 +281,18 @@ GLM、Kimi。provider id：`orcaterm`。
   `Hunyuan3/hy4-preview`。**id 必须带命名空间前缀**，否则上游答 `LLM(x) is not loaded`。
   **其余 id 不要用**（如 `qwen3`、`deepseek-reasoner`、`kimi-latest`、`hunyuan-turbos`、
   `glm-4.7-thinking` 等）：它们在选择器里选不到，属于绕过界面调用，**有封号风险**。
+- **会连到哪些主机**：`lightai.cloud.tencent.com`（每次对话）、
+  `api.orcaterm.cloud.tencent.com`（读额度，仅 cookie 登录时）、`orcaterm.com`（扫码登录与续期）；
+  另有 `res.wx.qq.com`（提供微信的 `wxLogin.js`）与 `open.weixin.qq.com`（二维码 iframe），
+  这两个只在扫码登录时加载，cookie 登录不会碰。除此之外不发往任何地方。
 - **额度**：`magpie quota` 显示每月问答次数（基础版 1000 次）与重置日期。扫码登录的账号读不到
   配额（额度接口只认控制台会话），这不影响使用。
 - **失败会如实报错**：上游把失败写在 SSE 里（`data: [ERROR]: …`），HTTP 状态仍是 200。
   插件会先读流头，把配额用完/限流回成 429、登录失效回成 401 并标记账号，这样 magpie 才会换账号
-  或让账号歇着，而不是把失败当成一次正常回答。
+  或让账号歇着，而不是把失败当成一次正常回答。限流还有一条**不走 SSE** 的路径：HTTP 200 +
+  `{"code":429,…}` 的 JSON，同样回成 429，并让该账号的限流器进入冷却。
+- **多轮上下文**：magpie 每个请求都给新的 session id，所以服务端会话状态靠不住；之前的轮次以
+  transcript 形式写进 `input.input`，`historyMessages` 恒为空。
 - **不做工具调用、不支持图片**：助手在服务端跑自己的工具，插件只做文本往返。
 
 ## License
