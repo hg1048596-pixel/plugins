@@ -18,6 +18,10 @@ magpie plugin login orcaterm
 
 or install it from magpie's Plugins tab and sign in there.
 
+QR sign-ins use the OrcaTerm user ID as the account identity, so signing in to the
+same user again updates that account even when the token or nickname changes.
+Older duplicate cards without this identity are not removed automatically.
+
 ## Before you use this: the terms
 
 **This plugin uses OrcaTerm's built-in AI allowance from outside OrcaTerm, and Tencent's terms do
