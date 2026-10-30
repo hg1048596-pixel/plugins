@@ -45,7 +45,7 @@ fallback for when scanning is not possible, and it is the one that carries the r
 | --- | --- | --- |
 | `lightai.cloud.tencent.com` | every chat | the credential, the message text |
 | `api.orcaterm.cloud.tencent.com` | reading the allowance (cookie sign-ins only) | the credential |
-| `orcaterm.com` | QR sign-in, and renewing its token | the credential, and the OAuth `code` |
+| `orcaterm.com` | QR sign-in, token renewal, and OAuth account allowance reads | the credential, and the OAuth `code` |
 | `res.wx.qq.com` | QR sign-in page | nothing — it serves WeChat's `wxLogin.js` |
 | `open.weixin.qq.com` | the QR widget's iframe | the `appid`, `redirect_uri` and `state` OrcaTerm issued |
 
@@ -255,13 +255,17 @@ allowance, 1000 questions a month on the basic edition — as `amount / limit` w
 The other rows there (session sharing, secrets, space) are not shown: they are unrelated resources,
 and session sharing's unlimited `-1` would read as an exhausted account.
 
+QR accounts use the same access token as the official client's `ot_session` cookie, sent only to
+`https://orcaterm.com/cgi/api`. Console-cookie accounts use `api.orcaterm.cloud.tencent.com`.
+Both sign-in methods can show the allowance; scanning does not require console credentials.
+
 ## Tests
 
 ```sh
 bun test
 ```
 
-90 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+93 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |
