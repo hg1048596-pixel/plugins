@@ -261,7 +261,7 @@ and session sharing's unlimited `-1` would read as an exhausted account.
 bun test
 ```
 
-88 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
+90 tests over eight files. No test signs in and none talks to Tencent: the chat tests replace `fetch`, and the only sockets are loopback listeners that the `/cb` tests stand up themselves.
 
 | file | what it holds |
 | --- | --- |
